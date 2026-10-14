@@ -102,7 +102,7 @@ def test_home_is_relative_to_the_profile_not_a_constant() -> None:
 
 
 def test_home_country_comes_from_the_fact_base() -> None:
-    assert home_country(_profile("Pallabi, Dhaka, Bangladesh")) == "Bangladesh"
+    assert home_country(_profile("Mirpur, Dhaka, Bangladesh")) == "Bangladesh"
     assert home_country(_profile("Lisbon, Portugal")) == "Portugal"
 
 
