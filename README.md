@@ -75,12 +75,20 @@ careerpilot traces                       # calls per task, failures, fallbacks, 
 
 The country is read out of `contact.location` in your profile, so the same store answers
 differently for a candidate in Dhaka and one in Lisbon. A posting counts as workable if
-it is located in your country, or if it states remote and names no other country.
+it is located in your country, or if it states remote and names no country or region that
+excludes it.
 
 `is_remote` alone is not trusted, because it is wrong in a specific and common way: Ashby
-sets `isRemote: true` on roles whose only stated location is an office. On the collected
-store that is 124 rows reading `San Francisco` while claiming remote. A flag that cannot
+sets `isRemote: true` on roles whose only stated location is an office. In an October 2026
+collect that was 143 rows reading `San Francisco` while claiming remote. A flag that cannot
 grant permission on its own costs some false negatives and removes all of those.
+
+A region is read the same way — as a boundary, not a hint. `Remote, AMER` and
+`Remote, Global` are both remote and both unscoped by country, but only one of them is
+open to someone in Dhaka, so each bucket carries the set of countries it stands for and
+is judged against yours. `Remote, Europe` is workable for a candidate in Lisbon and
+blocked for one in Dhaka; `Remote, AMER` is the other way round. Nothing about the
+posting changed.
 
 The consequence is that fit and reach stay separate. `score-job` prints `92.0/100 — strong`
 and then `location [NOT WORKABLE] from Bangladesh: flagged remote, but lists Washington, DC`.
