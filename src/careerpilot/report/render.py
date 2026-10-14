@@ -91,6 +91,7 @@ def audit(tailored: Tailored) -> dict[str, Any]:
             "band": tailored.fit.band,
             "matched": tailored.fit.met,
             "requirements": len(tailored.fit.outcomes),
+            "location": tailored.fit.location.model_dump(),
             "unmet_must_haves": tailored.fit.unmet_must_haves,
             "audit_trail": tailored.fit.audit_trail(),
         },

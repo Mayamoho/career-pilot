@@ -14,7 +14,7 @@ from typing import Any
 from careerpilot.domain.job import JobPosting
 from careerpilot.ground.gate import Claim, check_bullet, gate
 from careerpilot.match.extract import ExtractedRequirement
-from careerpilot.match.score import FitScore, RequirementOutcome
+from careerpilot.match.score import FitScore, LocationVerdict, RequirementOutcome
 from careerpilot.pipeline import tailor
 from careerpilot.profile.model import Atom, Profile
 from careerpilot.report import render
@@ -352,6 +352,9 @@ def _fit(*outcomes: RequirementOutcome) -> FitScore:
         band="weak",
         matched_weight=0.0,
         total_weight=0.0,
+        location=LocationVerdict(
+            home="Bangladesh", mode="remote", workable=True, note="remote, no country named"
+        ),
         outcomes=list(outcomes),
     )
 

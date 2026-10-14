@@ -187,6 +187,62 @@ def test_band_is_dropped_when_a_must_have_is_missed(profile: Profile, use_task_f
     assert fit.unmet_must_haves == ["Kubernetes at scale"]
 
 
+def test_a_perfect_skill_match_on_a_role_you_cannot_work_is_still_blocked(
+    profile: Profile,
+    use_task_fake: Any,
+) -> None:
+    """Two axes, both honest: the number measures fit, the verdict measures reach.
+
+    Capping the score would destroy the information — "you have every skill and the
+    job is in Ohio" is a different action from "you lack the skills". The CV is only
+    useless for the second, and `tailor` refuses it before spending a model call.
+    """
+    use_task_fake({"cite_evidence": {"atom_ids": ["proj-csxedu-rag"]}})
+    job = JobPosting(
+        source="greenhouse",
+        source_id="9",
+        company="Ohio Co",
+        title="Backend Engineer",
+        location="Columbus, OH",
+        is_remote=True,
+        description="Requirements:\n- pgvector\n",
+    )
+
+    fit = score_job(
+        job,
+        _set(req("Answers must cite the passage they came from", "grounded question answering")),
+        profile,
+    )
+
+    assert fit.total == 100.0
+    assert fit.blocked is True
+    assert fit.location.mode == "remote-eligible"
+
+
+def test_a_dhaka_posting_scores_and_stays_workable(
+    profile: Profile,
+    use_task_fake: Any,
+) -> None:
+    use_task_fake({"cite_evidence": {"atom_ids": ["proj-csxedu-rag"]}})
+    job = JobPosting(
+        source="bdtechjobs",
+        source_id="52",
+        company="Brain Station 23",
+        title="Senior API Platform Engineer",
+        location="Dhaka, Bangladesh",
+        description="Requirements:\n- pgvector\n",
+    )
+
+    fit = score_job(
+        job,
+        _set(req("Answers must cite the passage they came from", "grounded question answering")),
+        profile,
+    )
+
+    assert fit.blocked is False
+    assert fit.location.note == "in Bangladesh"
+
+
 def _set(*requirements: ExtractedRequirement) -> RequirementSet:
     return RequirementSet(
         requirements=list(requirements),

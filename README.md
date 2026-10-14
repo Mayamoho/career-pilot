@@ -32,14 +32,21 @@ The audit file says why, for every line.
 ## Setup
 
 ```bash
-python -m venv .venv && source .venv/bin/activate
-pip install -e ".[dev]"
+python3 -m venv .venv && source .venv/bin/activate
+python -m pip install -e ".[dev]"
 cp data/profile.example.yaml data/profile.yaml   # then fill in your real contact details
 ```
+
+`python -m pip` rather than `pip`, on purpose: on Debian and Ubuntu the bare `pip` on
+`PATH` can still resolve to system Python, which refuses installs outright under PEP 668
+and produces an error that reads as though the project is broken.
 
 `data/profile.yaml` is the real fact base and is gitignored; `profile.example.yaml` is
 the same atoms with placeholder contact details, so CI and the eval thresholds run
 anywhere. The CLI prefers the real one whenever it exists.
+
+`contact.location` is load-bearing, not a signature block: the country in it decides
+which postings you are shown at all (see *Location is a verdict*).
 
 Model calls need a credential — `GROQ_API_KEY` or `GEMINI_API_KEY`. Without one the tool
 still collects, stores and searches, and refuses to invent an answer:
@@ -50,13 +57,35 @@ export GROQ_API_KEY=gsk_...
 
 ## Use it
 
+`<uid>` means a job id copied out of `careerpilot jobs` — they are per-store, so there
+is no example uid that would survive being run.
+
 ```bash
 careerpilot collect                      # every curated board → SQLite (Greenhouse, Lever, Ashby, bdtechjobs)
+careerpilot jobs                         # what you can actually work, from the address in your profile
 careerpilot jobs "vector search"         # BM25 search over what was fetched
-careerpilot score-job ashby:313d5aa8     # requirement extraction + fit score, with the cited atoms
-careerpilot tailor ashby:313d5aa8        # CV + cover letter + audit trail into var/out/<job-uid>/
+careerpilot jobs --where bd              # only postings located in your country
+careerpilot jobs --where all             # everything stored, each row carrying its location verdict
+careerpilot score-job <uid>              # requirement extraction + fit score, with the cited atoms
+careerpilot tailor <uid>                 # CV + cover letter + audit trail into var/out/<job-uid>/
 careerpilot traces                       # calls per task, failures, fallbacks, cost
 ```
+
+### Location is a verdict, not a column
+
+The country is read out of `contact.location` in your profile, so the same store answers
+differently for a candidate in Dhaka and one in Lisbon. A posting counts as workable if
+it is located in your country, or if it states remote and names no other country.
+
+`is_remote` alone is not trusted, because it is wrong in a specific and common way: Ashby
+sets `isRemote: true` on roles whose only stated location is an office. On the collected
+store that is 124 rows reading `San Francisco` while claiming remote. A flag that cannot
+grant permission on its own costs some false negatives and removes all of those.
+
+The consequence is that fit and reach stay separate. `score-job` prints `92.0/100 — strong`
+and then `location [NOT WORKABLE] from Bangladesh: flagged remote, but lists Washington, DC`.
+`tailor` refuses a blocked posting **before making any model call**, since a tailored CV
+for a job restricted to another country is not a near miss. `--ignore-location` overrides it.
 
 Fit lands in one of three bands, and the band is a rule rather than an opinion: `strong`
 requires a score of 70 **and** zero unmet must-haves.
@@ -68,7 +97,7 @@ Tests and CI never call a model. They replay recorded responses
 Recordings are made deliberately, because that is the only step that costs money:
 
 ```bash
-careerpilot record-fixtures ashby:313d5aa8 greenhouse:8269100
+careerpilot record-fixtures <uid> <uid>
 ```
 
 ## Tests and evals

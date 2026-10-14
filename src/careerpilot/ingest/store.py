@@ -200,6 +200,7 @@ class JobStore:
                 "band": fit.band,
                 "matched": fit.met,
                 "required": len(fit.outcomes),
+                "location": fit.location.model_dump(),
                 "audit": fit.audit_trail(),
             }
         )

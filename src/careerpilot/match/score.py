@@ -6,7 +6,10 @@ score, a percentage, or a judgement about fit. Two consequences worth stating pl
 * a hallucinated atom id resolves to nothing and the requirement stays unmatched, so
   the failure mode is an under-score, never an inflated one;
 * years-of-experience requirements are settled by arithmetic on the profile's own
-  date ranges, because that is the one thing a language model reliably gets wrong.
+  date ranges, because that is the one thing a language model reliably gets wrong;
+* whether the job can be worked at all is settled by the location text against the
+  address in the fact base, because a skill match on a role restricted to another
+  country is not a lead, and no model gets to decide otherwise.
 """
 
 from __future__ import annotations
@@ -20,6 +23,7 @@ from pydantic import BaseModel, Field
 from careerpilot.ai.gateway import ask
 from careerpilot.ai.schemas import StructuredOutput
 from careerpilot.domain.job import JobPosting
+from careerpilot.domain.place import Mode, home_country, place_of
 from careerpilot.match.extract import CATEGORY_WEIGHTS, ExtractedRequirement, RequirementSet
 from careerpilot.profile.model import Atom, Profile
 from careerpilot.textutil import canonical, has_term
@@ -45,6 +49,21 @@ class RequirementOutcome(BaseModel):
         return [self.requirement.text, *self.evidence_atom_ids]
 
 
+class LocationVerdict(BaseModel):
+    """Whether this posting can be worked from where the profile says you are.
+
+    A separate axis from `band` on purpose. Skill fit and legal possibility are
+    different questions, and collapsing them would hide the number: 92/100 on a role
+    that can only be worked from Ohio is still information, it is just not a lead.
+    """
+
+    home: str
+    mode: Mode
+    workable: bool
+    note: str
+    countries: list[str] = Field(default_factory=list)
+
+
 class FitScore(BaseModel):
     job_uid: str
     company: str
@@ -54,10 +73,15 @@ class FitScore(BaseModel):
     matched_weight: float
     total_weight: float
     outcomes: list[RequirementOutcome]
+    location: LocationVerdict
 
     @property
     def met(self) -> int:
         return sum(1 for o in self.outcomes if o.matched)
+
+    @property
+    def blocked(self) -> bool:
+        return not self.location.workable
 
     @property
     def unmet_must_haves(self) -> list[str]:
@@ -109,6 +133,7 @@ def score_job(job: JobPosting, requirements: RequirementSet, profile: Profile) -
     total_weight = sum(o.weight for o in outcomes)
     matched_weight = sum(o.weight for o in outcomes if o.matched)
     total = round(100.0 * matched_weight / total_weight, 1) if total_weight > 0 else 0.0
+    place = place_of(job, home=home_country(profile))
     return FitScore(
         job_uid=job.uid,
         company=job.company,
@@ -118,6 +143,13 @@ def score_job(job: JobPosting, requirements: RequirementSet, profile: Profile) -
         matched_weight=round(matched_weight, 3),
         total_weight=round(total_weight, 3),
         outcomes=outcomes,
+        location=LocationVerdict(
+            home=place.home,
+            mode=place.mode,
+            workable=place.workable,
+            note=place.note,
+            countries=list(place.countries),
+        ),
     )
 
 
