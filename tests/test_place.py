@@ -128,6 +128,51 @@ def test_a_region_only_remote_is_workable_but_flagged() -> None:
     assert "region" in place.note
 
 
+def test_a_region_that_excludes_home_is_a_lock_not_a_maybe() -> None:
+    """Supabase lists this right beside its Global roles, which is how it got caught.
+
+    "Remote, AMER" is a restriction with a boundary, not a remote role whose geography
+    was left out. Reading it as workable sends a Dhaka candidate to apply for a job the
+    posting had already closed to them.
+    """
+    place = place_of(_job("Remote, AMER", remote=True))
+
+    assert place.mode == "remote"
+    assert place.region_only is True
+    assert place.workable is False
+    assert "outside Bangladesh" in place.note
+
+
+def test_a_region_that_could_contain_home_is_still_only_a_maybe() -> None:
+    """South Asia sits inside most APAC splits, so the door is open but unlatched."""
+    place = place_of(_job("Remote, APAC", remote=True))
+
+    assert place.workable is True
+    assert place.region_only is True
+    assert "check the posting" in place.note
+
+
+def test_a_global_remote_is_not_a_restricted_one() -> None:
+    place = place_of(_job("Remote, Global", remote=True))
+
+    assert place.workable is True
+    assert place.region_only is False
+
+
+def test_the_same_region_is_read_from_the_seekers_side() -> None:
+    """The region words do not change; only where the reader is standing does.
+
+    A Dhaka candidate is locked out of "Remote, AMER" and a Toronto candidate is locked
+    out of "Remote, APAC". Anything that scored both the same way had quietly turned
+    Bangladesh into a constant instead of a fact about the reader.
+    """
+    amer = place_of(_job("Remote, AMER", remote=True), home="Canada")
+    apac = place_of(_job("Remote, APAC", remote=True), home="Canada")
+
+    assert amer.workable is True
+    assert apac.workable is False
+
+
 def test_an_empty_location_is_not_silently_workable() -> None:
     place = place_of(_job(None))
 

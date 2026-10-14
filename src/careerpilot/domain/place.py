@@ -93,8 +93,43 @@ _COUNTRIES: dict[str, tuple[str, ...]] = {
     "Estonia": ("estonia", "tallinn"),
 }
 
-# Regional buckets that name several countries without picking one.
-_REGIONS = ("emea", "apac", "latam", "latin america", "europe", "eu ", " nordic", "asia")
+# Regional buckets name several countries without picking one, so they can only be read
+# from the seeker's side: "Remote, AMER" is open to a candidate in Toronto and closed to
+# one in Dhaka, and the phrase alone will not tell you which.
+#
+# Supabase's board is what forced this. It lists "Remote, Global" next to
+# "Remote, AMER", and the first version of this module treated any named region as
+# "worth checking" — so it called both workable from Bangladesh and handed the seeker a
+# role the posting had explicitly scoped to the Americas.
+_EUROPE = frozenset(
+    {
+        "Ireland", "Germany", "France", "Netherlands", "Spain", "Portugal", "Greece",
+        "Poland", "Romania", "Norway", "Sweden", "Denmark", "Finland", "Italy",
+        "Switzerland", "Austria", "Czechia", "Ukraine", "Estonia",
+    }
+)
+_AFRICA = frozenset({"Egypt", "Kenya", "Nigeria", "South Africa"})
+_WEST_ASIA = frozenset({"Israel", "United Arab Emirates", "Turkey"})
+_SOUTH_ASIA = frozenset({"Bangladesh", "India", "Pakistan", "Sri Lanka"})
+_EAST_ASIA = frozenset(
+    {
+        "Singapore", "Japan", "South Korea", "China", "Vietnam", "Thailand",
+        "Philippines", "Indonesia", "Malaysia", "Australia", "New Zealand",
+    }
+)
+_AMERICAS = frozenset(
+    {
+        "United States", "Canada", "Mexico", "Brazil", "Argentina", "Colombia",
+        "Chile", "Costa Rica",
+    }
+)
+
+_REGIONS: tuple[tuple[tuple[str, ...], frozenset[str]], ...] = (
+    (("latam", "latin america", "amer", "americas", "north america", "south america"), _AMERICAS),
+    (("emea", "emenat", "mena"), _EUROPE | _AFRICA | _WEST_ASIA | _SOUTH_ASIA),
+    (("europe", "eu", "nordic"), _EUROPE),
+    (("apac", "asia pacific", "southeast asia", "south asia", "asia"), _SOUTH_ASIA | _EAST_ASIA),
+)
 
 _WORDY = re.compile(r"^[a-z0-9. ]+$")
 # Two- and three-letter country abbreviations need word boundaries; "us" otherwise
@@ -123,6 +158,16 @@ def named_countries(text: str) -> tuple[str, ...]:
         if any(_mentions(lowered, word) for word in words)
     ]
     return tuple(found)
+
+
+def named_regions(text: str) -> tuple[frozenset[str], ...]:
+    """The country sets the regional words in `text` stand for."""
+    lowered = f" {text.lower().strip()} "
+    return tuple(
+        members
+        for words, members in _REGIONS
+        if any(_mentions(lowered, word) for word in words)
+    )
 
 
 def home_country(profile: Profile) -> str:
@@ -178,9 +223,8 @@ def place_of(job: JobPosting, *, home: str = DEFAULT_HOME) -> Place:
     countries = named_countries(text)
     at_home = home in countries
     away = tuple(c for c in countries if c != home)
-    region_only = bool(
-        not countries and any(_mentions(text, region) for region in _REGIONS)
-    )
+    regions = () if countries else named_regions(text)
+    region_only = bool(regions)
 
     remote_claimed = mode in {"remote", "remote-eligible"} or job.is_remote
     if at_home:
@@ -203,12 +247,19 @@ def place_of(job: JobPosting, *, home: str = DEFAULT_HOME) -> Place:
         note = f"on-site{', in ' + ', '.join(away) if away else ''}"
         workable = False
     elif remote_claimed:
-        note = (
-            "remote, restricted to a region — check the posting"
-            if region_only
-            else "remote, no country named — check the posting"
-        )
-        workable = True
+        # A named region is a restriction, not an invitation. It only grants
+        # reachability if the country you are standing in falls inside it.
+        if region_only:
+            covers_home = any(home in members for members in regions)
+            workable = covers_home
+            note = (
+                f"remote, restricted to a region that covers {home} — check the posting"
+                if covers_home
+                else f"remote, restricted to a region outside {home}"
+            )
+        else:
+            workable = True
+            note = "remote, no country named — check the posting"
     else:
         # Nothing in the row claims remote. Say what is missing rather than what is
         # present: "London" is a named location, it just is not a reachable one.
