@@ -23,7 +23,7 @@ from careerpilot.ingest.adapters import (
     LeverAdapter,
 )
 from careerpilot.ingest.base import get_json
-from careerpilot.ingest.boards import Board
+from careerpilot.ingest.boards import ADAPTERS, BOARDS, Board
 from careerpilot.ingest.store import JobStore, fts_query
 from careerpilot.pipeline import collect, wanted_title
 
@@ -176,6 +176,19 @@ def test_a_multiline_designation_is_collapsed_to_one_line(
         jobs = BdTechJobsAdapter().fetch_board(client, "1")
 
     assert jobs[0].title == "Backend Engineer Onsite / Full Time"
+
+
+def test_every_curated_board_has_an_adapter() -> None:
+    """A board with a mistyped `source` is skipped in silence, not in error.
+
+    `collect` looks the adapter up by name and `continue`s when the name is unknown, so
+    the board simply never appears again and nothing says why. This is the only check
+    that a curated token is reachable by code at all; whether the endpoint still answers
+    is what `board_health` is for.
+    """
+    unbacked = sorted({board.source for board in BOARDS} - set(ADAPTERS))
+
+    assert unbacked == []
 
 
 def test_greenhouse_metadata_flags_remote_when_the_location_does_not(

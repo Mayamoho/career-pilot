@@ -2,8 +2,9 @@
 
 Every public ATS feed is per-company and there is no directory of tokens, so
 breadth comes from maintaining this list, not from writing fetchers. Tokens marked
-verified were confirmed live against the provider API on 2026-10-13. The rest are
-candidates: the collector records which ones 404 so the list self-corrects over time.
+verified were confirmed live against the provider API — the original set on 2026-10-13,
+Supabase and GitLab on 2026-10-15. The rest are candidates: the collector records which
+ones 404 so the list self-corrects over time.
 """
 
 from __future__ import annotations
@@ -39,6 +40,11 @@ ASHBY: tuple[Board, ...] = tuple(
         ("notion", "Notion", True),
         ("baseten", "Baseten", True),
         ("deepgram", "Deepgram", True),
+        # Supabase was found by measuring, not by guessing: it was the only board in a
+        # probe of ~70 candidates whose postings are remote without being remote-for-the-US,
+        # and it named a country in none of them. Eleven of its fifteen kept roles are
+        # workable from Dhaka, which is more than the rest of this list manages together.
+        ("supabase", "Supabase", True),
         ("linear", "Linear", False),
         ("synthflow", "Synthflow", False),
         ("harvey", "Harvey", False),
@@ -49,6 +55,11 @@ GREENHOUSE: tuple[Board, ...] = tuple(
     Board("greenhouse", t, c, v)
     for t, c, v in [
         ("stripe", "Stripe", True),
+        # Fully distributed and it says so: the location is bare "Remote" with no
+        # country attached, which is the shape that survives the place filter. Only one
+        # of its 32 kept roles had that shape today, but the board is large enough that
+        # the number moves every week.
+        ("gitlab", "GitLab", True),
         ("datadoghq", "Datadog", False),
         ("cloudflare", "Cloudflare", False),
         ("mongodb", "MongoDB", False),
