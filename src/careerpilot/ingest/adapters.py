@@ -13,12 +13,15 @@ Lever is kept because it is cheap, but its install base has thinned considerably
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 import httpx
 
 from careerpilot.domain.job import JobPosting, coerce_datetime, html_to_text
 from careerpilot.ingest.base import get_json
+
+_ONE_LINE = re.compile(r"\s+")
 
 
 class GreenhouseAdapter:
@@ -164,7 +167,7 @@ class BdTechJobsAdapter:
             if not isinstance(row, dict):
                 continue
             source_id = str(row.get("id") or "")
-            title = str(row.get("designation") or "").strip()
+            title = _one_line(row.get("designation"))
             if not source_id or not title:
                 continue
             url = str(row.get("applyLink") or "")
@@ -188,6 +191,16 @@ class BdTechJobsAdapter:
                 )
             )
         return out
+
+
+def _one_line(value: Any) -> str:
+    """Collapse a `designation` to a single line.
+
+    bdtechjobs sometimes returns the whole listing card in this field — title, work
+    mode and seniority separated by blank lines. Left as-is it breaks the tab-separated
+    CLI output and makes the content hash depend on the board's line wrapping.
+    """
+    return _ONE_LINE.sub(" ", str(value or "")).strip()
 
 
 def _bd_body(row: dict[str, Any], deadline: str) -> str:

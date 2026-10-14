@@ -23,7 +23,7 @@ MAX_RETRY_SLEEP_S = 30.0
 
 USER_AGENT = (
     "CareerPilot/0.1 "
-    "(+https://github.com/kawser-abu/careerpilot; personal job search)"
+    "(+https://github.com/Mayamoho/career-pilot; personal job search)"
 )
 DEFAULT_HEADERS = {"User-Agent": USER_AGENT, "Accept": "application/json"}
 

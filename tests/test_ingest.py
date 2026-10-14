@@ -146,6 +146,38 @@ def test_bdtechjobs_row_uses_its_own_field_names(respx_mock: respx.MockRouter) -
     assert "2-3 years" in job.description and "<" not in job.description
 
 
+def test_a_multiline_designation_is_collapsed_to_one_line(
+    respx_mock: respx.MockRouter,
+) -> None:
+    """The board sometimes puts the whole listing card in `designation`.
+
+    Left raw, the embedded newlines break the tab-separated CLI row, and the content
+    hash ends up keyed on the board's line wrapping rather than on its content.
+    """
+    respx_mock.get(BDTECHJOBS_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "jobs": [
+                    {
+                        "id": 9,
+                        "designation": "Backend\n\nEngineer\n\nOnsite\n\n/\n\nFull Time",
+                        "companyName": "Bdtask",
+                    }
+                ],
+                "total": 1,
+                "page": 1,
+                "limit": 50,
+            },
+        )
+    )
+
+    with httpx.Client() as client:
+        jobs = BdTechJobsAdapter().fetch_board(client, "1")
+
+    assert jobs[0].title == "Backend Engineer Onsite / Full Time"
+
+
 def test_greenhouse_metadata_flags_remote_when_the_location_does_not(
     respx_mock: respx.MockRouter,
 ) -> None:
@@ -316,6 +348,17 @@ def test_collect_survives_a_dead_board_and_remembers_it(
         ("Backend Engineering Manager", False),
         ("Sales Engineer", False),
         ("Staff Software Engineer", False),
+        # The Bangladeshi market titles the same work differently, and the first
+        # version of this list was written from US boards. Every True below is a live
+        # bdtechjobs title the original filter silently threw away.
+        ("DevOps Engineer", True),
+        ("Senior Cloud Engineer", True),
+        ("Mid to Senior Level Python Developer", True),
+        ("Sr. Frontend Developer (React JS)", True),
+        ("AI Systems Engineer", True),
+        ("Senior SecOps Engineer", True),
+        ("Cybersecurity Expert", True),
+        ("Database Administrator", False),
     ],
 )
 def test_the_title_filter_is_code_not_a_model(title: str, wanted: bool) -> None:

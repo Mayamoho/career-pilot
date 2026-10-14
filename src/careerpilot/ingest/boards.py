@@ -86,10 +86,18 @@ ADAPTERS: dict[str, type[SourceAdapter]] = {
 }
 
 # Roles we actually want. Applied in code, after fetching, on the title.
+#
+# The second half of this list was written from evidence rather than taste: the first
+# collect run kept 13 of bdtechjobs' 55 postings and dropped 42, and the ones it threw
+# away were real engineering roles. Bangladeshi boards title those jobs "Developer" and
+# "DevOps Engineer", not "Software Engineer", so a list written from how US boards name
+# things silently filters out the entire local market.
 TITLE_INCLUDE = (
     "ai engineer", "machine learning", "ml engineer", "backend", "software engineer",
     "platform engineer", "full stack", "fullstack", "applied ai", "llm", "agent",
     "data engineer", "security engineer", "sre", "infrastructure",
+    "developer", "devops", "cloud", "secops", "cybersecurity", "site reliability",
+    "ai systems", "information security",
 )
 TITLE_EXCLUDE = (
     "intern", "co-op", "principal", "staff ", "director", "vp ", "head of",
