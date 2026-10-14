@@ -1,0 +1,18 @@
+__pycache__/
+*.py[cod]
+.venv/
+var/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+dist/
+*.egg-info/
+.env
+.qoder/settings.local.json
+
+# The fact base with real contact details, and any CV — the committed
+# data/profile.example.yaml has the same atoms with placeholders, which is what CI
+# runs against. Generated artifacts land in output/ and are never committed either.
+data/profile.yaml
+*.pdf
+/output/

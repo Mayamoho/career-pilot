@@ -1,0 +1,306 @@
+# De-identified fact base — safe to commit, because CI and the eval thresholds need a
+# profile and this one has no phone number or address in it.
+#
+# The real file is data/profile.yaml: identical atoms, plus contact details, and it is
+# gitignored. `careerpilot` prefers the real one whenever it exists.
+#
+# Every bullet in every tailored CV must be traceable to one of these atoms.
+# Keep it factual and keep the numbers exact: `metrics` and the digits inside
+# `text` are what the groundedness gate allows a generated bullet to claim.
+# Fill in the LinkedIn link still marked TODO; nothing else is invented downstream.
+
+name: Abu Kawser
+headline: Backend & Systems Engineer — AI / RAG / Security
+
+contact:
+  email: "you@example.com"  # placeholder — the real one lives in profile.yaml
+  phone: "+1 000 000 0000"  # placeholder
+  location: "Your City, Your Country"  # placeholder
+  github: "https://github.com/Mayamoho"
+  linkedin: "https://linkedin.com/in/you"  # placeholder
+
+atoms:
+  # ---------------------------------------------------------------- education
+  - id: edu-du-cse
+    kind: education
+    text: "B.Sc. in Computer Science and Engineering, University of Dhaka — final year (4th year, 2nd semester)"
+    source: cv/education
+    org: University of Dhaka
+    period: "2022 – present"
+  - id: edu-ndc-hsc
+    kind: education
+    text: "Higher Secondary Certificate (Science), Notre Dame College, Dhaka — GPA 5.00 of 5.00"
+    source: cv/education
+    org: Notre Dame College, Dhaka
+    period: "2021"
+    metrics: { gpa: "5.00/5.00" }
+  - id: edu-cpsc-ssc
+    kind: education
+    text: "Secondary School Certificate (Science), Cantonment Public School and College, Rangpur — GPA 5.00 of 5.00"
+    source: cv/education
+    org: Cantonment Public School and College, Rangpur
+    period: "2019"
+    metrics: { gpa: "5.00/5.00" }
+
+  # ---------------------------------------------------------------- languages
+  - id: lang-bengali
+    kind: language
+    text: "Native Bengali speaker"
+    skills: [Bengali]
+  - id: lang-english
+    kind: language
+    text: "Professional English proficiency"
+    skills: [English]
+
+  # ---------------------------------------------------------------- skill atoms
+  - id: skill-languages
+    kind: skill
+    text: "Go, Python, TypeScript, JavaScript, Java, C++, C, Dart, SQL"
+    skills: [Go, Python, TypeScript, JavaScript, Java, "C++", C, Dart, SQL]
+  - id: skill-backend
+    kind: skill
+    text: "Go/chi, FastAPI, Node.js/Express, REST APIs, server-sent events, authentication, API architecture"
+    skills: [chi, FastAPI, "Node.js", Express, REST, SSE, API design, authentication]
+  - id: skill-ai-ml
+    kind: skill
+    text: "Machine learning, deep learning, neural networks, scikit-learn, pandas, NumPy, embeddings, RAG, LLM APIs"
+    skills: ["machine learning", "deep learning", "neural networks", "scikit-learn", pandas, numpy, embeddings, RAG, LLM]
+  - id: skill-llm-retrieval
+    kind: skill
+    text: "Gemini, Groq, hybrid retrieval, pgvector, vector similarity, PostgreSQL full-text search, prompt-injection screening"
+    skills: [Gemini, Groq, "hybrid retrieval", pgvector, "vector search", FTS5, "prompt injection"]
+  - id: skill-databases
+    kind: skill
+    text: "PostgreSQL, pgvector, Redis, MinIO/S3, Firebase, Cloud Firestore, Supabase"
+    skills: [PostgreSQL, pgvector, Redis, MinIO, S3, Firebase, Firestore, Supabase]
+  - id: skill-frontend
+    kind: skill
+    text: "Next.js, React, Tailwind CSS, shadcn/ui, Flutter"
+    skills: ["Next.js", React, Tailwind, "shadcn/ui", Flutter]
+  - id: skill-systems
+    kind: skill
+    text: "Data structures and algorithms, data compression, PPM, arithmetic coding, Reed-Solomon, GSM 03.38"
+    skills: [DSA, "data compression", PPM, "arithmetic coding", "Reed-Solomon", "GSM 03.38"]
+  - id: skill-devops
+    kind: skill
+    text: "Docker, Docker Compose, Azure, Render, Linux, Git and GitHub"
+    skills: [Docker, "Docker Compose", Azure, Render, Linux, Git, GitHub]
+  - id: skill-security
+    kind: skill
+    text: "CTF problem solving, web security, digital forensics"
+    skills: [CTF, "web security", forensics]
+
+  # ---------------------------------------------------------------- experience
+  - id: exp-eventify
+    kind: role
+    text: "Contributor at Eventify BD, a platform centralising technology events, hackathons, CTFs, datathons and programming contests across Bangladesh"
+    source: cv/experience
+    org: Eventify BD
+    skills: [community, "event platform"]
+  - id: exp-eventify-work
+    kind: role
+    text: "Support development and organisation of event information so users can discover competitive programming, cybersecurity, AI and technology opportunities in Bangladesh"
+    source: cv/experience
+    org: Eventify BD
+    skills: [documentation, coordination]
+  - id: exp-bdmo
+    kind: role
+    text: "Academic Team Member at Bangladesh Mathematical Olympiad, Dec 2022 to Jul 2024: supported mathematical problem-solving activities and contest preparation, and contributed to problem-solving discussions and mathematical training for participants"
+    source: cv/experience
+    org: Bangladesh Mathematical Olympiad
+    period: "Dec 2022 – Jul 2024"
+    skills: [mathematics, "problem setting", training]
+  - id: exp-samurai
+    kind: role
+    text: "Volunteer at Code Samurai 2024, assisting participants and organisers with event operations, coordination and technical activities"
+    source: cv/experience
+    org: Code Samurai
+    period: "2024"
+    skills: [volunteering, coordination]
+
+  # ---------------------------------------------------------------- Bornomala
+  - id: proj-bornomala
+    kind: project
+    text: "Bornomala, an offline-first Progressive Web App that compresses Bangla text into GSM 03.38 7-bit SMS codes"
+    source: cv/projects
+    skills: [JavaScript, "Progressive Web App", "GSM 03.38", Python]
+  - id: proj-bornomala-compression
+    kind: project
+    text: "Fits 361 Bangla characters per SMS segment instead of 70, a 5.15x gain"
+    source: cv/projects
+    metrics: { chars_per_segment: "361 vs 70", gain: "5.15x" }
+    skills: ["data compression", "GSM 03.38"]
+  - id: proj-bornomala-ppm
+    kind: project
+    text: "Implemented an on-device PPM language model and arithmetic coder with no server or internet dependency; 100% of 5,000 held-out messages fit in a single segment"
+    source: cv/projects
+    metrics: { held_out_messages: "5000", single_segment_rate: "100%" }
+    skills: [PPM, "arithmetic coding", "on-device inference"]
+  - id: proj-bornomala-emergency
+    kind: project
+    text: "Added an Emergency mode with 9 national hotlines, relay batching for multi-message transmission, and Reed-Solomon QR hand-off for reliable offline data transfer"
+    source: cv/projects
+    metrics: { hotlines: "9" }
+    skills: ["Reed-Solomon", QR, offline]
+  - id: award-bornomala-hackathon
+    kind: award
+    text: "Bornomala placed 5th nationally in the Crisis Tech track at July Hackathon 2026"
+    source: cv/achievements
+    org: July Hackathon 2026
+    period: "2026"
+
+  # ---------------------------------------------------------------- CSxEDU
+  - id: proj-csxedu
+    kind: project
+    text: "CSxEDU Digital Knowledge Platform: served on the academic team building a platform unifying library circulation, digital archives, a research repository and a student project showcase, deployed with Docker Compose on an Azure VM"
+    source: cv/projects
+    skills: ["Next.js", React, TypeScript, "Go/chi", FastAPI, PostgreSQL, Redis, MinIO, Docker, Azure]
+  - id: proj-csxedu-rag
+    kind: project
+    text: "Built the RAG AI assistant using hybrid pgvector cosine similarity combined with PostgreSQL full-text search, returning cited answers streamed over server-sent events with Groq as primary and Gemini as fallback"
+    source: cv/projects
+    skills: [RAG, pgvector, "PostgreSQL FTS", SSE, Groq, Gemini, "hybrid retrieval", embeddings]
+  - id: proj-csxedu-security
+    kind: project
+    text: "Implemented prompt-injection screening, JWT and Google OAuth 2.0 authentication with magic links, five-tier role-based access control, audit logging, a bilingual UI and bKash/Nagad offline payment workflows"
+    source: cv/projects
+    metrics: { rbac_tiers: "5" }
+    skills: ["prompt injection", JWT, OAuth, RBAC, "audit logging", bKash, Nagad]
+
+  # ---------------------------------------------------------------- LearnLoop
+  - id: proj-learnloop
+    kind: project
+    text: "LearnLoop, a peer-to-peer skill-sharing Android application for skill exchange, free courses, progress tracking, real-time chat and topic-based communities"
+    source: cv/projects
+    skills: [Flutter, Dart, Firebase]
+  - id: proj-learnloop-work
+    kind: project
+    text: "Contributed the authentication, home, feedback and community screens, plus gamified quizzes and learning games"
+    source: cv/projects
+    skills: [Flutter, Dart, "UI implementation"]
+  - id: proj-learnloop-integration
+    kind: project
+    text: "Integrated Firebase authentication, Google Sign-In, Firestore real-time data and Supabase-backed persistence"
+    source: cv/projects
+    skills: ["Firebase Auth", "Google Sign-In", Firestore, Supabase]
+
+  # ---------------------------------------------------------------- Doctor Tracker
+  # Source: github.com/Mayamoho/doctor-tracker-api and -web, both October 2026.
+  # The repos' READMEs state every number below; nothing here is rounded up. No
+  # credential is copied in — the deployed reviewer sign-in lives in that README and
+  # does not belong in a document that gets pasted into a CV.
+  - id: proj-doctortracker
+    kind: project
+    text: "Doctor Tracker, a clinic register replacing a practice's spreadsheets: an admin portal for doctors and the patients each one tracks, deployed on Vercel and Render against MongoDB Atlas"
+    source: github/Mayamoho/doctor-tracker-web
+    org: Mayamoho/doctor-tracker
+    period: "2026"
+    skills: ["full stack", MongoDB, TypeScript, "REST API", "access control"]
+  - id: proj-doctortracker-api
+    kind: project
+    text: "Built the Express 5 and Mongoose 9 REST API in TypeScript: JWT sessions carried in httpOnly access and refresh cookies, a dashboard aggregated in one $facet pass, and free-text search over a normalized searchTerms array with an anchored prefix match instead of $regex on raw strings"
+    source: github/Mayamoho/doctor-tracker-api
+    skills: [Express, Mongoose, MongoDB, JWT, TypeScript, "query indexes", "aggregation pipeline"]
+    metrics: { node: "20.19", body_limit_kb: "16" }
+  - id: proj-doctortracker-security
+    kind: project
+    text: "Held the token out of JavaScript entirely behind one admin role, with requireAuth and requireRole guards; zod parses every parameter before it reaches Mongo, $regex input is escaped, /auth/* is limited to 10 requests per 15 minutes and the API to 120 per minute, an unknown account and a wrong password answer identically, and production refuses to boot on the seeded development credentials"
+    source: github/Mayamoho/doctor-tracker-api
+    skills: ["rate limiting", zod, "input validation", "authentication", "enumeration resistance", "httpOnly cookies"]
+    metrics: { auth_rate_limit: "10 per 15 minutes", api_rate_limit: "120 per minute" }
+  - id: proj-doctortracker-data
+    kind: project
+    text: "Sourced 72 real doctors with names, degrees, BMDC registration numbers, specialization and institution copied from public Bangladeshi doctor directories with the source recorded per row, leaving phone and email as the literal string 'not published'; 600 patient records are synthetic, while districts, divisions and condition names with ICD-10 codes come from the DGHS facility registry and a per-specialty reference catalogue"
+    source: github/Mayamoho/doctor-tracker-api
+    skills: [MongoDB, "data provenance", "reference data", "ICD-10", DGHS]
+    metrics: { doctors: "72", patients: "600" }
+  - id: proj-doctortracker-portal
+    kind: project
+    text: "Built the Next.js 16 App Router portal on React 19 with TanStack Query 5, Recharts 3 and Tailwind CSS 4: filters for specialization, hospital, district, condition, gender and severity, server-whitelisted sorting on 8 register columns and 7 patient columns, pagination held in the URL so a reloaded or shared link survives, and case-mix and weekly and monthly visit counts on the dashboard"
+    source: github/Mayamoho/doctor-tracker-web
+    skills: ["Next.js", React, "TanStack Query", Recharts, Tailwind, zod, TypeScript]
+    metrics: { sortable_register_columns: "8", sortable_patient_columns: "7" }
+
+  # ---------------------------------------------------------------- other projects
+  - id: proj-pdfchat
+    kind: project
+    text: "PDF Chat, a RAG-based PDF question-answering application using document ingestion, embeddings, semantic retrieval and LLM generation"
+    source: cv/additional
+    skills: [RAG, embeddings, "document ingestion", "semantic search"]
+  - id: proj-gridwise
+    kind: project
+    text: "GridWise, an LLM-assisted energy-grid optimisation project exploring generative AI, constraint reasoning and optimisation"
+    source: cv/additional
+    skills: [LLM, optimisation, "constraint reasoning"]
+  - id: proj-cowork
+    kind: project
+    text: "CoWork API, a backend and API project built for an ICT Fest hackathon, focused on service architecture and application workflows"
+    source: cv/additional
+    skills: ["API design", backend, "service architecture"]
+  - id: proj-railsheba
+    kind: project
+    text: "RailSheba, a Java railway ticketing system applying object-oriented programming and database-oriented application design"
+    source: cv/additional
+    skills: [Java, OOP, "database design"]
+  - id: proj-nutrimind
+    kind: project
+    text: "NutriMind AI, an AI-oriented application exploring data-driven nutrition recommendations and intelligent user assistance"
+    source: cv/additional
+    skills: [AI, "data-driven recommendation"]
+  - id: proj-bartabahok
+    kind: project
+    text: "Bartabahok, an application project focused on information exchange and practical software workflows"
+    source: cv/additional
+    skills: [backend]
+
+  # ---------------------------------------------------------------- competitive record
+  - id: award-bup-ctf-2026
+    kind: award
+    text: "9th place at BUP CTF 2026"
+    source: cv/achievements
+    period: "2026"
+  - id: award-bcs-ictfest-ctf
+    kind: award
+    text: "20th place at the International BCS ICT Fest CTF 2026"
+    source: cv/achievements
+    period: "2026"
+  - id: award-xuap-datathon
+    kind: award
+    text: "Top-10 finalist at HerwillXUAP Datathon 2026"
+    source: cv/achievements
+    period: "2026"
+  - id: award-nsu-cybernauts
+    kind: award
+    text: "Finalist at NSU Cybernauts CTF 2026"
+    source: cv/achievements
+    period: "2026"
+  - id: award-bup-hackathon
+    kind: award
+    text: "Finalist at BUP Hackathon 2026"
+    source: cv/achievements
+    period: "2026"
+  - id: award-duet-ai-hackathon
+    kind: award
+    text: "Top-15 finalist at DUET AI Hackathon 2026"
+    source: cv/achievements
+    period: "2026"
+  - id: award-cuet-datathon
+    kind: award
+    text: "Finalist at the National Datathon, CUET CSE Fest"
+    source: cv/achievements
+    period: "2025"
+  - id: award-bup-ctf-2025
+    kind: award
+    text: "Top-15 finalist at BUP CTF 2025"
+    source: cv/achievements
+    period: "2025"
+  - id: award-uap-cyber-siege
+    kind: award
+    text: "10th place at UAP Cyber Siege 2025"
+    source: cv/achievements
+    period: "2025"
+  - id: award-ductf
+    kind: award
+    text: "4th place at DUCTF 2024"
+    source: cv/achievements
+    period: "2024"
