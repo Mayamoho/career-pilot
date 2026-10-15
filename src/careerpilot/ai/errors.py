@@ -98,7 +98,16 @@ class ExhaustedRetriesError(AIError):
         self.causes = causes
 
 
-_DAILY_QUOTA = re.compile(r"per day|\(TPD\)|daily", re.I)
+# The one definition of "this refusal is about a window, not a minute". `ai/providers.py`
+# imports this to decide whether a 429 is worth sleeping through, and the hint below imports
+# it to decide what to tell the human. Two regexes for one question is how a real Gemini quota
+# 429 ended up labelled "not your daily quota" — the classifier grew a dialect and the hint
+# did not.
+DAILY_QUOTA = re.compile(
+    r"per day|per month|per week|monthly|weekly|\(TPD\)|\(RPD\)|daily"
+    r"|exceeded your current quota",
+    re.I,
+)
 _MISSING_KEY = re.compile(r"MissingProviderCredential|is not set", re.I)
 # A provider that answered 4xx/5xx on something that is not a quota refused the request
 # itself. Telling that user to go set a key they already set sends them editing .env for
@@ -110,25 +119,32 @@ def _hint(causes: list[str]) -> str:
     """The one action the reader can actually take, derived from the causes, in code.
 
     A stack trace of provider JSON is not a next step. These failures each have exactly one
-    answer: wait for the window, set the missing key, or accept that a provider refused the
-    payload we built. Nothing here is invented — it is read off the causes that were raised.
+    answer: the window is closed, a provider refused the payload we built, or a hop has no
+    key. Nothing here is invented — it is read off the causes that were raised. Groq and
+    Gemini can both be out of tokens on the same evening, so the quota line names every
+    provider that said so rather than blaming the first one.
     """
     blob = " | ".join(causes)
-    refused = [c for c in causes if _REFUSED.search(c) and not _DAILY_QUOTA.search(c)]
+    refused = [c for c in causes if _REFUSED.search(c) and not DAILY_QUOTA.search(c)]
     if refused:
         return (
             "\nfix: a fallback provider was reached and refused the request itself, so this "
             f"is not your daily quota: {refused[-1][:180]}"
         )
-    if _DAILY_QUOTA.search(blob):
+    spent = ", ".join(
+        dict.fromkeys(c.split(":", 1)[0].strip() for c in causes if DAILY_QUOTA.search(c))
+    )
+    if spent:
         return (
-            "\nfix: your Groq daily token quota is spent (free tier resets at midnight "
-            "UTC). Re-run tomorrow, or set GEMINI_API_KEY so the fallback chain has a "
-            "second provider to use today."
+            f"\nfix: every provider that answered is out of quota today ({spent}); free "
+            "tiers reset at midnight UTC. Work for free meanwhile — `careerpilot rank "
+            "--max-new 0` reuses stored scores, and `jobs`, `closing`, `ats` and `start-"
+            "here` never ask a model. `careerpilot keys` names the next hop worth a key."
         )
     if _MISSING_KEY.search(blob) and "HTTP" not in blob:
         return (
-            "\nfix: the fallback chain has only one usable provider. Set GEMINI_API_KEY "
-            "in .env so a Groq limit can be routed around."
+            "\nfix: a hop in the chain has no key, so a limit on the one you do have could not "
+            "be routed around. `careerpilot keys` says which variable, and where the free key "
+            "comes from."
         )
     return ""

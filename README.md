@@ -186,35 +186,41 @@ the ones you did not fill in, so you can start with Groq alone and add more late
 ```dotenv
 GROQ_API_KEY=gsk_...
 CAREERPILOT_LIVE=1
-# optional, and each one is a fresh daily budget rather than a backup:
+# optional, and each one is a fresh daily budget rather than a mere backup:
 GEMINI_API_KEY=
-CEREBRAS_API_KEY=
 OPENROUTER_API_KEY=
+CEREBRAS_API_KEY=
+COHERE_API_KEY=
 ```
 
-Every hop is a free tier that needs no credit card, and the model is chosen for each so it
-declares structured JSON output (a model that silently ignores that returns prose, which the
-validator rejects). Where each key comes from, and what it is worth adding:
+Every hop is a free tier that needs no credit card. Where each key comes from, and what it is
+worth adding:
 
-| Order | Provider | Key from | Why it is in the chain |
+| Hops | Provider | Key from | Why it is in the chain |
 |---|---|---|---|
-| 1 | Groq | `console.groq.com` | fastest; **but the free tier caps tokens per day** (~200k on gpt-oss-120b), so this is the hop that runs out |
-| 2 | Gemini | `aistudio.google.com` | the single most useful second key: a different daily window, so `tailor` works after Groq says no |
-| 3 | Cerebras | `cerebras.ai` | a large free daily token budget; OpenAI-compatible endpoint |
-| 4 | OpenRouter | `openrouter.ai` | one key, many `:free` models; pinned to one that declares structured output |
+| 1, 3 | Groq | `console.groq.com` | fastest. The free tier caps tokens **per model per day** (~200k), so `gpt-oss-120b` and `gpt-oss-20b` are two separate windows on the one key |
+| 2, 4 | Gemini | `aistudio.google.com` | the most useful second key, metered per model too: `gemini-2.5-flash` then `gemini-2.5-flash-lite` |
+| 5, 6 | OpenRouter | `openrouter.ai` | many `:free` models behind one key, metered **per request per day** — a different currency, so it answers on an evening when both token budgets are gone |
+| 7 | Cerebras | `cerebras.ai` | a third free token budget, same wire format as Groq |
+| 8 | Cohere | `cohere.com` | last, because Chat V2 accepts no `response_format`: the JSON is asked for and then checked, rather than enforced |
+
+A hop is picked for obeying `response_format`. A model that quietly ignores it returns prose, the
+validator rejects it as a contract failure and the chain moves on — contained, but not free, which
+is why the ids nobody has watched answer sit at the end of the list rather than the start.
 
 Run `careerpilot keys` to see which of these this machine actually has, and `careerpilot
 traces` to see whether the fallback fired on the run you just did.
 
-Hop 2 was re-pinned on 2026-10-16 after checking the key itself: `GET /v1beta/models` does
-not list `gemini-2.0-flash-001` any more, so the second hop would have died on a 404 at
-exactly the moment it was needed. `gemini-2.5-flash` is what that key offers, and it is the
-only flash id there that is neither `-preview` nor `-latest`.
-
-Hops 3 and 4 were wired and tested against recorded responses, and their model ids read off
-each provider's own public model list, but neither has been exercised from a real key yet.
-If one of those ids is stale, the call fails as a 4xx and the chain moves on; it cannot
-corrupt a CV.
+What has been measured here, as of 2026-10-16: hop 1 has answered 133 real calls and hop 2 nineteen.
+Hop 2's model was re-pinned after checking the key itself — `GET /v1beta/models` does not list
+`gemini-2.0-flash-001` any more, so the second hop would have died on a 404 at exactly the moment it
+was needed, and pinned suffixes are what rot. `gemini-2.5-flash` is what that key offers, and it is
+the only flash id there that is neither `-preview` nor `-latest`. The second Groq model is present on
+the key, but that endpoint publishes no `supported_parameters` for this account, so its structured
+output is documented rather than reprobed. The OpenRouter, Cerebras and Cohere ids were read off each
+provider's own public model list; none of the three has been exercised from this machine, so treat
+them as quota that has not been tried, not as hops known to work. A stale id fails as a 4xx
+and the chain moves on, which is why an unproven hop is safe to have but wrong to lead with.
 
 A key you `export` in the shell outranks the file.
 
@@ -244,17 +250,39 @@ Four commands take one; the rest take no uid at all.
 | `jobs [QUERY]` | optional keyword | free | lists stored postings with the location read honestly (`--where bd/open/all`, `--source`, `--limit`) |
 | `closing` | — | free | postings ordered by days left, expired ones dropped (`--days 21`) |
 | `ats [UID]` | optional uid, `--cv FILE`, `--jd FILE` | free | ATS-readiness score of the CV, in code — see *Can a machine read this* |
-| `rank [QUERY]` | optional keyword | 1 call per *new* job | which postings are worth the day's budget (`--limit`, `--max-new 5`, `--where`) |
-| `score-job UID` | **uid** | 1 call | the fit score and one line per requirement, matched or not |
-| `tailor UID` | **uid** | several calls | CV + cover letter + audit trail in every print form (`--style ats/oxford/both/md`, `--out DIR`) |
+| `rank [QUERY]` | optional keyword | per *new* job: 1 extract + 1 check per requirement | which postings are worth the day's budget (`--limit`, `--max-new 5`, `--where`) |
+| `score-job UID` | **uid** | 1 extract + 1 check per requirement | the fit score and one line per requirement, matched or not |
+| `tailor UID` | **uid** | ~20–40 calls | CV + cover letter + audit trail in every print form (`--style ats/oxford/both/md`, `--out DIR`) |
 | `traces` | — | free | what the model calls cost, failed, and whether the fallback fired |
-| `keys` | — | free | which provider keys are set, which hop is out of tokens, where the next free key comes from |
 | `keys` | — | free | which provider keys are set, which hop is out of tokens, where the next free key comes from |
 | `record-fixtures UID…` | **uids** | several calls | records model answers as cassettes so CI can replay them for free |
 
 Progress (`… fetching`, `… scoring 2/5`, `… drafting bullets`) is written to **stderr**, so
 `careerpilot rank > shortlist.txt` gives a clean file while the terminal still shows the tool
 working. Ctrl+C is safe: every score is committed the moment it lands.
+
+### How long each command takes
+
+Read off the 270 calls this machine has recorded in `var/traces.jsonl`, measured 2026-10-16:
+
+| Provider | per successful call | `score-job` | `tailor` |
+|---|---|---|---|
+| Groq `openai/gpt-oss-120b` | median **2.0 s**, p90 46.6 s | ~35–70 s | ~1–2 min |
+| Gemini `gemini-2.5-flash` | median **6.8 s**, p90 31.3 s | **3 m 39 s** (measured) | ~3–5 min |
+
+Only the Gemini `score-job` figure is a direct end-to-end measurement; the rest is that run's
+call count times the medians in the same table. The count is what moves, and the posting sets
+it: one extraction, then one citation check per requirement that code could not match from
+your fact base — 16 on a real bdjobs internship. `tailor` adds the drafting call, the gate
+checking each claim, and the letter, which is why it is the heaviest thing here.
+
+`REQUEST_TIMEOUT_S` is 45 and the p90 sits on it, so one stubborn call can burn three minutes
+and still return a transport failure. That is what the retry rules are budgeted against: a
+day-sized quota now fails in **~2.4 s** instead of being slept through twice.
+
+Every hop out of quota is therefore the *fastest* failing case, and every no-model
+command — `ats`, `jobs`, `closing`, `keys`, `traces`, `start-here`, and `rank` over postings
+already scored — is under a second, all day, whatever the quotas are doing.
 
 ## Use it, step by step
 
@@ -476,11 +504,14 @@ you a clean file while the terminal keeps saying what it is doing. Each one is a
 call, which on this link is ten to thirty seconds — a command that quiet looks hung, and a
 command that looks hung gets interrupted.
 
-This is the only command in the tool that can spend anything. `--max-new` (default 5) is
-there because Groq's free tier caps *tokens per minute* **and tokens per day** — measured
-2026-10-16: `tokens per day (TPD): Limit 200000` on `openai/gpt-oss-120b`. One extraction is
-a few thousand tokens, so an uncapped batch rank spends a whole day's quota on one screen of
-results. Scores are stored, so the same command a minute later costs nothing:
+This is the only command that spends across many postings at once, which is how a day gets
+away from you. `--max-new` (default 5) exists because both free tiers cap *tokens per day* —
+measured 2026-10-16: Groq `tokens per day (TPD): Limit 200000` on `openai/gpt-oss-120b`, and
+Gemini refusing the same evening with `You exceeded your current quota`. Scoring one posting
+is not one call: it is one extraction, plus one citation check for every requirement the
+posting names that code could not match from your fact base — 16 on a real bdjobs internship.
+So an uncapped batch rank spends a whole day's quota on one screen of results. Scores are
+stored, so the same command a minute later costs nothing:
 
 ```
 # workable from Bangladesh — 0 fresh score(s), 6 reused, 110 over the --max-new budget
@@ -619,19 +650,24 @@ careerpilot traces
 }
 ```
 
-Real numbers from building this: a hundred and forty-six calls across every live run cost
-five cents. Two things worth reading in that: `total_failures` is a third of all calls — the
-free tier throws schema errors, and the retry path is what you are paying five cents for
-instead of a broken CV — and `fallback_invocations` is 0, because only one provider key was
-ever configured, so the chain has been tested against recorded responses but never exercised
-across real providers on this machine.
+Real numbers from the first stretch of building this: a hundred and forty-six calls across
+every live run cost five cents. Two things worth reading in that: `total_failures` is a third of
+all calls — the free tier throws schema errors, and the retry path is what you are paying five
+cents for instead of a broken CV — and `fallback_invocations` was 0, because up to that point one
+provider key was configured, so the chain had been tested against recorded responses but never
+walked across real providers.
 
-The real ceiling is not money, it is that free tier's **daily token window** (measured
-2026-10-16: `tokens per day (TPD): Limit 200000` on `openai/gpt-oss-120b`). Once it is spent,
-`rank` and `tailor` stop with a `fix:` line naming the midnight-UTC reset rather than sleeping
-on a limit that a minute cannot clear. `ats`, `jobs`, `closing`, `start-here` and `collect`
-keep working all day, because none of them ask a model anything. This is the argument for
-configuring `GEMINI_API_KEY`: a second provider is a second daily window, not just a backup.
+That changed on the evening of 2026-10-16, when Groq's day closed mid-command and Gemini answered
+the rest: 19 calls on hop 2, including the measured `score-job` in the table above. The real
+ceiling is not money, it is a free tier's **daily token window, per model** (measured:
+`Rate limit reached for model openai/gpt-oss-120b … on tokens per day (TPD): Limit 200000`). Once
+one model's window is spent, the chain asks the next one instead of sleeping on a limit a minute
+cannot clear — which is why `careerpilot keys` counts *model windows*, not providers: two models
+on the key you already have are two windows. `ats`, `jobs`, `closing`, `start-here` and `collect`
+keep working all day either way, because none of them ask a model anything. This is the argument
+for configuring `GEMINI_API_KEY` and `OPENROUTER_API_KEY`: a second metered provider is a second
+way to work tonight, and OpenRouter meters requests rather than tokens, so it does not run out on
+the same schedule at all.
 
 A sensible weekly loop: `collect`, skim `jobs`, `ats` your CV against the two or three that
 look right, `rank --max-new 5` to spend the day's budget where it counts, `tailor` only the

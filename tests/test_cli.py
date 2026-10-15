@@ -15,7 +15,9 @@ from typing import Any
 import pytest
 from typer.testing import CliRunner
 
+from careerpilot.ai.providers import CREDENTIAL_ENV
 from careerpilot.cli import app
+from careerpilot.config import MODEL_CHAIN
 from careerpilot.domain.job import JobPosting
 from careerpilot.ingest.store import JobStore
 
@@ -463,9 +465,6 @@ def test_md_style_writes_no_html(
     assert not list(out.rglob("*.html"))
 
 
-_SECRETS = ("GROQ_API_KEY", "GEMINI_API_KEY", "CEREBRAS_API_KEY", "OPENROUTER_API_KEY")
-
-
 def test_keys_names_every_hop_and_what_is_missing(
     runner: CliRunner, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -473,30 +472,39 @@ def test_keys_names_every_hop_and_what_is_missing(
 
     The list is read off `MODEL_CHAIN`, so a hop added in config.py appears here without
     anyone remembering to edit a help string — the same drift that left `--help` silent
-    about uids until it was reported by a person using the tool.
+    about uids until it was reported by a person using the tool. The counts are derived
+    from the same two objects for the same reason: a hardcoded `4` was a change detector
+    the moment the chain grew.
     """
-    for name in _SECRETS:
+    for name in CREDENTIAL_ENV.values():
         monkeypatch.setenv(name, "")
 
     result = runner.invoke(app, ["keys"])
 
-    assert result.exit_code == 0
+    assert result.exit_code == 0, result.output
     out = _output(result)
-    for name in _SECRETS:
+    for name in CREDENTIAL_ENV.values():
         assert name in out
-    assert out.count("NOT SET") == 4
+    assert out.count("NOT SET") == len(MODEL_CHAIN)
     assert "Nothing is configured" in out
 
 
-def test_keys_counts_the_providers_that_are_actually_usable(
+def test_keys_counts_the_model_windows_that_are_actually_usable(
     runner: CliRunner, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    for name in _SECRETS:
+    """Groq meters tokens per model per day, so two Groq models are two windows.
+
+    Counting providers instead would print "one provider is usable" for a key that still
+    has a second day-sized budget behind it — which is the opposite of the answer this
+    command exists to give.
+    """
+    for name in CREDENTIAL_ENV.values():
         monkeypatch.setenv(name, "")
     monkeypatch.setenv("GROQ_API_KEY", "gsk-test")
 
     out = _output(runner.invoke(app, ["keys"]))
 
+    groq_windows = sum(1 for spec in MODEL_CHAIN if spec.provider == "groq")
     assert "1. groq" in out
-    assert out.count("NOT SET") == 3
-    assert "Add hop 2" in out
+    assert out.count("NOT SET") == len(MODEL_CHAIN) - groq_windows
+    assert f"{groq_windows} model windows on one key are usable" in out

@@ -63,37 +63,63 @@ class ModelSpec(BaseModel):
         ) / 1_000_000
 
 
-# Ordered fallback chain — every hop a free tier that needs no card, so a person with one
-# key works and a person with four keys gets a deeper budget. Groq first for latency; then
-# the rest purely as quota, tried only when their key is configured (see `credential_present`).
-# Re-pinned 2026-10-15: `groq-llama-3.3-70b-specdec` now answers `model_not_found`, so every
-# live call died at the first hop. gpt-oss-120b is the smallest Groq model left that declares
-# `structured_outputs`, which the strict json_schema body requires — a model that ignores
-# response_format would silently return prose and fail validation.
-# Prices are the per-token rates each provider's own endpoint reports, scaled to 1M; the free
-# hops are 0.0 because on their free tiers they genuinely cost nothing.
+# Ordered fallback chain — every hop a free tier that needs no card. Groq first for latency,
+# then the rest purely as quota, tried only when their key is configured (`credential_present`
+# skips an unconfigured hop before it reaches the network).
+# Prices are the per-token rates each provider's own endpoint reports, scaled to 1M. The free
+# hops are 0.0 because on their free tiers they genuinely cost nothing; `traces` therefore
+# under-reports those calls rather than inventing a price nobody is charged.
 PRIMARY = ModelSpec(
     provider="groq", model="openai/gpt-oss-120b", input_per_1m=0.15, output_per_1m=0.60
 )
 # Re-pinned 2026-10-16 against the key itself, not from memory: `GET /v1beta/models` on this
 # credential has no `gemini-2.0-flash-001` at all, so the second hop would have died on a 404
-# exactly when it was needed most. `gemini-2.5-flash` is present and is the only flash id in
-# that list that is neither `-preview` nor `-latest` — pinned suffixes rot, which is the same
-# mistake that killed the Groq hop yesterday.
-# Zero rates because the developer free tier is what is actually used here; `traces` therefore
-# under-reports Gemini work rather than inventing a price nobody verified today.
+# exactly when it was needed most. `gemini-2.5-flash` is present, and it then answered 19 real
+# calls the same evening while Groq's day was spent.
 FALLBACK = ModelSpec(provider="gemini", model="gemini-2.5-flash", input_per_1m=0.0,
                      output_per_1m=0.0)
-# Cerebras and OpenRouter are added as deeper quota, not as verified-working hops: their
-# model ids were read off each provider's own public model list on 2026-10-16, but neither
-# has been exercised from this machine because no key for them exists yet. A model id that
-# turns out to be wrong fails as a 4xx and the chain moves on — it cannot corrupt a CV.
-QUOTA_TERTIARY = ModelSpec(provider="cerebras", model="gpt-oss-120b", input_per_1m=0.0,
-                          output_per_1m=0.0)
-QUOTA_LAST = ModelSpec(provider="openrouter", model="nvidia/nemotron-3-super-120b-a12b:free",
-                      input_per_1m=0.0, output_per_1m=0.0)
 
-MODEL_CHAIN: tuple[ModelSpec, ...] = (PRIMARY, FALLBACK, QUOTA_TERTIARY, QUOTA_LAST)
+# The rest of the chain is quota, best to worst. Two facts decide the order.
+#
+# First, Groq and Gemini cap tokens per *model* per day, and the refusal names the model:
+# `Rate limit reached for model openai/gpt-oss-120b … on tokens per day (TPD): Limit 200000`.
+# A second model on a key that is already in `.env` is therefore a second daily window, not a
+# copy of the one that just closed. Providers alternate below so consecutive hops draw on
+# independent pools, instead of spending a whole day against one host before asking another.
+#
+# Second, what each key was seen to offer today. `GET /v1/models` on this Groq key lists 11
+# ids, of which these do text at 131k context: gpt-oss-120b, gpt-oss-20b, gpt-oss-safeguard-20b,
+# qwen/qwen3.8-27b. That endpoint returns no `supported_parameters` for this account, so the
+# JSON-schema support of the second Groq hop is documented-but-not-reprobed; if it ignores
+# `response_format` it answers prose, the validator rejects it as a contract failure, and the
+# chain moves on — the failure is contained, it cannot corrupt a CV.
+#
+# Deliberately absent: `gemini-2.5-pro` and the `3.5`/`3.6`/`3.7`/`3.8` flash ids, which are on
+# this key but whose free-tier status was not measured, and a billing-gated model would answer
+# 403 or 429 on every hop. Also absent: models whose providers train on the inputs, because the
+# payload carries a name, a phone number and an address.
+QUOTA_HOPS: tuple[ModelSpec, ...] = (
+    ModelSpec(provider="groq", model="openai/gpt-oss-20b", input_per_1m=0.0,
+              output_per_1m=0.0),
+    ModelSpec(provider="gemini", model="gemini-2.5-flash-lite", input_per_1m=0.0,
+              output_per_1m=0.0),
+    # Both ids read off OpenRouter's public /models with `structured_outputs` in
+    # supported_parameters; its free tier is request-per-day capped, so this hop exists to
+    # answer when the two token-metered providers above have both run out.
+    ModelSpec(provider="openrouter", model="nvidia/nemotron-3-super-120b-a12b:free",
+              input_per_1m=0.0, output_per_1m=0.0),
+    ModelSpec(provider="openrouter", model="dots-studio/dots-3-note-preview:free",
+              input_per_1m=0.0, output_per_1m=0.0),
+    # No CEREBRAS_API_KEY or COHERE_API_KEY exists on this machine yet, so both are skipped
+    # before the network today. Cohere's Chat V2 needs its own adapter: a different reply
+    # shape and no JSON-schema body, so its answers are validated rather than enforced.
+    ModelSpec(provider="cerebras", model="gpt-oss-120b", input_per_1m=0.0,
+              output_per_1m=0.0),
+    ModelSpec(provider="cohere", model="command-r7b-12-2024", input_per_1m=0.0,
+              output_per_1m=0.0),
+)
+
+MODEL_CHAIN: tuple[ModelSpec, ...] = (PRIMARY, FALLBACK, *QUOTA_HOPS)
 
 MAX_REPAIR_ATTEMPTS = 2
 REQUEST_TIMEOUT_S = 45.0
@@ -112,7 +138,7 @@ NETWORK_BACKOFF_S = 1.5
 # a failure to route around, it is a schedule: the same request will succeed shortly.
 # Waiting is the only correct response, and a second provider with no credential helps
 # nobody. A 429 naming a *day* window is the opposite case and is not waited on at all —
-# see `_DAILY_WINDOW` in `ai/providers.py`.
+# see `DAILY_QUOTA` in `ai/errors.py`.
 RATE_LIMIT_WAIT_S = 45.0
 
 # A CV bullet ships only if the entailment judge agrees it is supported.

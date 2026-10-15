@@ -20,10 +20,25 @@ from careerpilot.ai.errors import (
     NoRecordingError,
 )
 from careerpilot.ai.gateway import SYSTEM_PREAMBLE, AIGateway
-from careerpilot.ai.providers import PROVIDERS, GeminiProvider, GroqProvider, _gemini_schema
+from careerpilot.ai.providers import (
+    CREDENTIAL_ENV,
+    PROVIDERS,
+    CohereProvider,
+    GeminiProvider,
+    GroqProvider,
+    _gemini_schema,
+    _http_failure,
+)
 from careerpilot.ai.schemas import StructuredOutput
 from careerpilot.ai.trace import TraceSink
-from careerpilot.config import FALLBACK, live_mode_enabled, require_secret
+from careerpilot.cli import _KEY_SOURCE
+from careerpilot.config import (
+    FALLBACK,
+    MAX_REPAIR_ATTEMPTS,
+    MODEL_CHAIN,
+    live_mode_enabled,
+    require_secret,
+)
 from careerpilot.ground.gate import Claim, ClaimList, EntailmentVerdict
 from careerpilot.match.extract import ExtractedRequirement, RequirementSet
 from careerpilot.match.score import EvidenceCitation
@@ -111,6 +126,9 @@ def live(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> AIGateway:
 
 GROQ_URL = GroqProvider.BASE
 GEMINI_URL = f"{GeminiProvider.BASE}/{FALLBACK.model}:generateContent"
+# Both Gemini hops in the chain, matched on host rather than on the pinned id, so a
+# re-pinning in config.py cannot leave a second model with no registered mock.
+GEMINI_CALL = rf"{GeminiProvider.BASE.replace('.', '[.]')}/.*:generateContent"
 
 
 def test_a_malformed_reply_is_retried_with_the_validators_complaint(live: AIGateway) -> None:
@@ -297,24 +315,44 @@ def test_a_daily_quota_moves_on_instead_of_waiting_through_it(
 
 
 def test_a_hop_with_no_key_is_skipped_and_never_mentioned(live: AIGateway) -> None:
-    """The chain is four providers deep; most people have one or two keys.
+    """The chain is eight hops deep; most people have one or two keys.
 
     An unconfigured hop must not appear in the failure list. Listing three
     "no credential" causes under the one provider that actually refused makes the real
     answer unreadable, and it would also mean the tool is reporting a state of the
     user's `.env` as though it were a model's behaviour.
+
+    Every *configured* hop is expected to speak here, so Groq answers twice — the chain
+    gives it two models, and a spent day on one of them is not a spent day on the other.
     """
     with respx.mock:
         groq = respx.post(GROQ_URL).mock(return_value=httpx.Response(400, text="bad request"))
-        gemini = respx.post(GEMINI_URL).mock(return_value=httpx.Response(400, text="bad request"))
+        gemini = respx.post(url__regex=GEMINI_CALL).mock(
+            return_value=httpx.Response(400, text="bad request")
+        )
 
         with pytest.raises(ExhaustedRetriesError) as excinfo:
             live.ask(task="answer", system=SYSTEM, user=USER, schema=Answer)
 
     assert groq.called and gemini.called
     causes = " ".join(excinfo.value.causes)
-    assert "cerebras" not in causes and "openrouter" not in causes
-    assert len(excinfo.value.causes) == 2
+    for provider in set(CREDENTIAL_ENV) - {"groq", "gemini"}:
+        assert provider not in causes
+    assert {c.split(":", 1)[0] for c in excinfo.value.causes} == {"groq", "gemini"}
+
+
+def test_every_hop_in_the_chain_has_an_adapter_a_variable_and_a_key_hint() -> None:
+    """`config.py` can add a hop; the three tables that answer it must not be forgotten.
+
+    A provider in MODEL_CHAIN with no adapter is reported as `groq: no adapter` inside a
+    causes list — a missing dict entry wearing the clothes of a model refusal. `keys`
+    would raise a KeyError instead, which is at least honest, but both are a crash or a
+    lie on the command whose whole job is to tell the user what to do about quota.
+    """
+    chain = {spec.provider for spec in MODEL_CHAIN}
+    assert chain <= set(PROVIDERS), "add the adapter before the hop"
+    assert chain <= set(CREDENTIAL_ENV), "every hop needs a variable to be skipped on"
+    assert chain <= set(_KEY_SOURCE), "`keys` needs to say where each free key comes from"
 
 
 def test_no_key_at_all_says_so_instead_of_reporting_zero_attempts(
@@ -322,7 +360,7 @@ def test_no_key_at_all_says_so_instead_of_reporting_zero_attempts(
 ) -> None:
     """Live mode on with an empty `.env` is a setup state, not a model that refused."""
     monkeypatch.setenv("CAREERPILOT_LIVE", "1")
-    for name in ("GROQ_API_KEY", "GEMINI_API_KEY", "CEREBRAS_API_KEY", "OPENROUTER_API_KEY"):
+    for name in CREDENTIAL_ENV.values():
         monkeypatch.setenv(name, "")
     live_mode_enabled.cache_clear()
     gateway = AIGateway(
@@ -341,12 +379,18 @@ def test_every_model_failing_raises_exhausted_instead_of_guessing(live: AIGatewa
         respx.post(GROQ_URL).mock(
             return_value=httpx.Response(200, json=_openai_body({"text": "x", "score": -1}))
         )
-        respx.post(GEMINI_URL).mock(return_value=httpx.Response(429, text="quota"))
+        respx.post(url__regex=GEMINI_CALL).mock(
+            return_value=httpx.Response(429, text=GEMINI_QUOTA)
+        )
 
         with pytest.raises(ExhaustedRetriesError) as excinfo:
             live.ask(task="answer", system=SYSTEM, user=USER, schema=Answer)
 
-    assert excinfo.value.attempts == 4  # 3 repairs on groq, then one transport failure
+    groq_hops = sum(1 for spec in MODEL_CHAIN if spec.provider == "groq")
+    gemini_hops = sum(1 for spec in MODEL_CHAIN if spec.provider == "gemini")
+    # Every Groq model spends its whole repair budget; every Gemini model is refused once,
+    # because a day-sized quota is a verdict and re-asking the same model cannot fix it.
+    assert excinfo.value.attempts == groq_hops * (MAX_REPAIR_ATTEMPTS + 1) + gemini_hops
     assert "Escalate to a human" in str(excinfo.value)
 
 
@@ -496,3 +540,123 @@ def test_the_gemini_request_inlines_a_submodel_array(live: AIGateway) -> None:
     assert "$ref" not in json.dumps(schema)
     assert schema["properties"]["requirements"]["items"]["type"] == "OBJECT"
     assert result.requirements[0].skill == "php"
+
+
+GEMINI_QUOTA = (
+    '{"error":{"code":429,"message":"You exceeded your current quota, please check '
+    'your plan and billing details.","status":"RESOURCE_EXHAUSTED"}}'
+)
+
+OPENROUTER_DAY = (
+    '{"error":{"message":"Rate limit exceeded: Free Usage Limit Reached: 50 Requests, '
+    'try again later. Per Day","type":"rate_limit"}}'
+)
+OPENROUTER_HOUR = OPENROUTER_DAY.replace("Per Day", "Per Hour")
+
+OR_SPEC = next(spec for spec in MODEL_CHAIN if spec.provider == "openrouter")
+COHERE_SPEC = next(spec for spec in MODEL_CHAIN if spec.provider == "cohere")
+
+
+def test_a_request_metered_per_day_is_a_verdict_but_a_hourly_one_is_a_schedule() -> None:
+    """OpenRouter counts requests, not tokens, and names the window in the same breath.
+
+    Waiting through a day is never the answer; waiting 45 seconds through an hour is,
+    because the same model will take the work and the next hop has no key yet.
+    """
+    assert not _http_failure(OR_SPEC, httpx.Response(429, text=OPENROUTER_DAY)).retryable
+    assert _http_failure(OR_SPEC, httpx.Response(429, text=OPENROUTER_HOUR)).retryable
+
+    # And the window has to survive the cut: the refusal message is truncated for display,
+    # so matching it before truncating is what keeps a long body from becoming a minute.
+    filler = "no useful detail here; " * 20
+    late = f'{{"error":{{"message":"Rate limit exceeded: {filler} Per Day"}}}}'
+    assert not _http_failure(OR_SPEC, httpx.Response(429, text=late)).retryable
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        # Chat V2 as documented: a list of typed blocks under `message`.
+        {"message": {"content": [{"type": "text", "text": '{"text": "g", "score": 9}'}]}},
+        # The same field answering with a bare string.
+        {"message": {"content": '{"text": "g", "score": 9}'}},
+        # V1, which put it at the top level.
+        {"text": '{"text": "g", "score": 9}'},
+    ],
+    ids=["blocks", "string", "legacy"],
+)
+def test_the_cohere_hop_is_asked_plainly_and_its_answer_is_found_wherever_it_lives(
+    monkeypatch: pytest.MonkeyPatch, payload: dict[str, Any]
+) -> None:
+    """Cohere accepts no `response_format`, so the JSON is asked for and then checked.
+
+    NOT EXERCISED against a live endpoint — no COHERE_API_KEY exists on this machine.
+    That is the reason all three reply spellings are read here: a wrong guess about where
+    the answer sits would cost a user a skipped hop at the exact moment every other
+    provider had already spent its day, and would be invisible until then.
+    """
+    monkeypatch.setenv("COHERE_API_KEY", "co-test")
+    body = {**payload, "usage": {"billed_units": {"input_tokens": 40, "output_tokens": 12}}}
+
+    with respx.mock:
+        route = respx.post(CohereProvider.BASE).mock(return_value=httpx.Response(200, json=body))
+        with httpx.Client() as client:
+            reply = CohereProvider().generate(
+                system=SYSTEM,
+                messages=[{"role": "user", "content": USER}],
+                schema=Answer,
+                model=COHERE_SPEC,
+                client=client,
+            )
+
+    assert reply.parse(Answer).score == 9
+    assert (reply.prompt_tokens, reply.completion_tokens) == (40, 12)
+    sent = json.loads(route.calls[0].request.content)
+    assert "response_format" not in sent
+    assert sent["messages"][0] == {"role": "system", "content": SYSTEM}
+
+
+def test_an_unnamed_gemini_quota_moves_on_rather_than_being_guessed_at(
+    live: AIGateway,
+) -> None:
+    """Google states no window, so we may not sleep as if it promised one.
+
+    Measured 2026-10-16: after a Groq day spent on the same posting, Gemini answered
+    `You exceeded your current quota`. Waiting 45 seconds twice per task to discover that
+    a day is not a minute is the failure already fixed for Groq, in a second dialect.
+    """
+    with respx.mock:
+        respx.post(GROQ_URL).mock(
+            return_value=httpx.Response(
+                429, text="Rate limit reached on tokens per day (TPD): Limit 200000"
+            )
+        )
+        gemini = respx.post(url__regex=GEMINI_CALL).mock(
+            return_value=httpx.Response(429, text=GEMINI_QUOTA)
+        )
+        with pytest.raises(ExhaustedRetriesError) as exc:
+            live.ask(task="answer", system=SYSTEM, user=USER, schema=Answer)
+
+    # One call per Gemini model in the chain and not one more: the refusal is a verdict
+    # about today, so the answer is the next model, never a re-ask of the same one.
+    gemini_hops = sum(1 for spec in MODEL_CHAIN if spec.provider == "gemini")
+    assert gemini.call_count == gemini_hops, "an unnamed quota must not be re-asked in place"
+    text = str(exc.value)
+    assert "out of quota today" in text
+    assert "groq" in text and "gemini" in text, "both ceilings must be named"
+
+
+def test_the_quota_hint_points_at_the_work_that_is_still_free() -> None:
+    """The reader is not done for the day: half the tool never asks a model."""
+    error = ExhaustedRetriesError(
+        "tailor",
+        2,
+        [
+            "groq: groq: HTTP 429: tokens per day (TPD): Limit 200000, Used 199722",
+            f"gemini: gemini: HTTP 429: {GEMINI_QUOTA}",
+        ],
+    )
+
+    assert "groq, gemini" in str(error)
+    assert "rank --max-new 0" in str(error)
+    assert "careerpilot keys" in str(error)

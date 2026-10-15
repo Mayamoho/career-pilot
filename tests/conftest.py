@@ -10,6 +10,7 @@ import pytest
 from careerpilot.ai.cassette import CassetteStore
 from careerpilot.ai.fake import ScriptedGateway
 from careerpilot.ai.gateway import AIGateway, set_gateway
+from careerpilot.ai.providers import CREDENTIAL_ENV
 from careerpilot.ai.trace import TraceSink
 from careerpilot.config import live_mode_enabled, profile_path
 from careerpilot.domain.job import JobPosting
@@ -19,12 +20,21 @@ from support import TaskFake
 
 @pytest.fixture(autouse=True)
 def _isolated_gateway(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
-    """Every test starts with no gateway and with live mode forced off."""
-    # Set to empty, not deleted: `load_dotenv(override=False)` leaves any key that is
-    # already present, so an empty value keeps a developer's own `.env` — which the
-    # README invites them to fill with CAREERPILOT_LIVE=1 — from silently switching the
-    # suite onto real models. Deleting it instead would let the file win.
+    """Every test starts with no gateway, live mode forced off, and no provider keys.
+
+    Keys are blanked because the fallback chain now reaches five providers and the
+    README invites the operator to fill `.env` with real ones. A suite that inherits
+    a working `OPENROUTER_API_KEY` from the machine running it would send live-shaped
+    requests down hops a mock never registered — which reads as a broken test rather
+    than as the accident it is.
+
+    Set to empty, not deleted: `load_dotenv(override=False)` leaves any key that is
+    already present, so an empty value is what keeps a developer's own file from
+    silently switching the suite onto real models. Deleting instead would let it win.
+    """
     monkeypatch.setenv("CAREERPILOT_LIVE", "")
+    for secret in CREDENTIAL_ENV.values():
+        monkeypatch.setenv(secret, "")
     live_mode_enabled.cache_clear()
     set_gateway(None)
     yield
