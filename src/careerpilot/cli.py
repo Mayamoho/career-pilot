@@ -20,10 +20,12 @@ import typer
 from careerpilot import pipeline
 from careerpilot.ai.errors import AIError
 from careerpilot.ai.gateway import get_gateway, set_gateway
+from careerpilot.ai.providers import CREDENTIAL_ENV, credential_present
 from careerpilot.ats.reader import read_cv, score_cv
 from careerpilot.config import (
     DATA_DIR,
     FIXTURES_DIR,
+    MODEL_CHAIN,
     REPO_ROOT,
     MissingCredentialError,
     live_mode_enabled,
@@ -54,15 +56,18 @@ def _guide() -> None:
         score-job UID       one posting  -> the fit score and its reasons
         tailor UID          one posting  -> CV, cover letter, audit trail
         ats [UID]           optional uid; with none it scores the CV alone
-      Everything else takes no uid: collect, closing, rank, start-here, traces,
-      record-fixtures JOBS...
+        record-fixtures UID...  several, to record cassettes for CI
+      No uid at all: collect, closing, rank, start-here, traces, keys.
 
     \b
     WHAT EACH RUN COSTS
-      Free, no key, no model:  collect, jobs, ats, closing, start-here, traces
+      Free, no key, no model:  collect, jobs, ats, closing, traces, keys
+      Also free:  start-here, a questionnaire that writes your fact base
       One model call per new posting:  rank (capped by --max-new, default 5)
       Several model calls:  score-job, tailor, record-fixtures
       A posting scored once is reused, so `rank` twice costs one call.
+      `gave up after N attempt(s)` is the model refusing, not crashing.
+      Run `careerpilot keys` to see which hop is out of tokens today.
 
     \b
     FIRST RUN, IN ORDER
@@ -336,6 +341,44 @@ def traces() -> None:
     typer.echo(json.dumps(sink.summary(sink.read_disk()), indent=2))
 
 
+_KEY_SOURCE = {
+    "groq": ("console.groq.com", "fastest hop, but its free tier caps tokens per day"),
+    "gemini": ("aistudio.google.com", "a separate daily window: the key that keeps you working"),
+    "cerebras": ("cerebras.ai", "a third free token budget, same wire format as Groq"),
+    "openrouter": ("openrouter.ai", "one key, many free models, tried last"),
+}
+
+
+@app.command()
+def keys() -> None:
+    """Say which provider keys are set, and which one to get next.
+
+    Reading the fallback chain out of the configuration rather than restating it means this
+    cannot drift from what `tailor` will actually try.
+    """
+    load_env_file()
+    live = live_mode_enabled()
+    typer.echo(f"live mode: {'ON' if live else 'OFF — set CAREERPILOT_LIVE=1 in .env'}\n")
+    usable = 0
+    for hop, spec in enumerate(MODEL_CHAIN, start=1):
+        secret = CREDENTIAL_ENV[spec.provider]
+        source, why = _KEY_SOURCE[spec.provider]
+        ready = credential_present(spec.provider)
+        usable += int(ready)
+        status = "set" if ready else "NOT SET"
+        detail = spec.model if ready else f"free key at {source}: {why}"
+        typer.echo(f"{hop}. {spec.provider:<11} {status:<8} {secret}  — {detail}")
+    if usable == 0:
+        typer.echo(
+            "\nNothing is configured, so every model-dependent command refuses. "
+            "Groq alone is enough to start."
+        )
+    elif usable == 1:
+        typer.echo("\nOne provider is usable: when its day runs out the command stops. Add hop 2.")
+    else:
+        typer.echo(f"\n{usable} providers are usable, so a spent day moves on instead of stopping.")
+
+
 @app.command(name="record-fixtures")
 def record_fixtures(
     uids: Annotated[
@@ -352,9 +395,9 @@ def record_fixtures(
     having to remember the environment variable, so the cost is a deliberate act.
     """
     load_env_file()
-    if not any(os.environ.get(name, "").strip() for name in ("GROQ_API_KEY", "GEMINI_API_KEY")):
+    if not any(credential_present(provider) for provider in CREDENTIAL_ENV):
         raise typer.BadParameter(
-            "no provider credential in the environment or in .env — see the README"
+            "no provider credential in the environment or in .env — see `careerpilot keys`"
         )
     os.environ["CAREERPILOT_LIVE"] = "1"
     live_mode_enabled.cache_clear()

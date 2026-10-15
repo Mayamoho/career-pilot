@@ -203,10 +203,18 @@ validator rejects). Where each key comes from, and what it is worth adding:
 | 3 | Cerebras | `cerebras.ai` | a large free daily token budget; OpenAI-compatible endpoint |
 | 4 | OpenRouter | `openrouter.ai` | one key, many `:free` models; pinned to one that declares structured output |
 
+Run `careerpilot keys` to see which of these this machine actually has, and `careerpilot
+traces` to see whether the fallback fired on the run you just did.
+
+Hop 2 was re-pinned on 2026-10-16 after checking the key itself: `GET /v1beta/models` does
+not list `gemini-2.0-flash-001` any more, so the second hop would have died on a 404 at
+exactly the moment it was needed. `gemini-2.5-flash` is what that key offers, and it is the
+only flash id there that is neither `-preview` nor `-latest`.
+
 Hops 3 and 4 were wired and tested against recorded responses, and their model ids read off
-each provider's own public model list, but neither has been exercised from a real key yet —
-the machine this was built on only has a Groq key. If one of those ids is stale, the call
-fails as a 4xx and the chain moves on; it cannot corrupt a CV.
+each provider's own public model list, but neither has been exercised from a real key yet.
+If one of those ids is stale, the call fails as a 4xx and the chain moves on; it cannot
+corrupt a CV.
 
 A key you `export` in the shell outranks the file.
 
@@ -240,6 +248,8 @@ Four commands take one; the rest take no uid at all.
 | `score-job UID` | **uid** | 1 call | the fit score and one line per requirement, matched or not |
 | `tailor UID` | **uid** | several calls | CV + cover letter + audit trail in every print form (`--style ats/oxford/both/md`, `--out DIR`) |
 | `traces` | — | free | what the model calls cost, failed, and whether the fallback fired |
+| `keys` | — | free | which provider keys are set, which hop is out of tokens, where the next free key comes from |
+| `keys` | — | free | which provider keys are set, which hop is out of tokens, where the next free key comes from |
 | `record-fixtures UID…` | **uids** | several calls | records model answers as cassettes so CI can replay them for free |
 
 Progress (`… fetching`, `… scoring 2/5`, `… drafting bullets`) is written to **stderr**, so
@@ -668,7 +678,7 @@ count when a tech term is in the same title, so "Python Automation Intern" is ke
 | `pip: command not found` after activating | Same cause. Use `python -m pip ...`, which always targets the interpreter you just activated. |
 | PowerShell: ``cannot be loaded because running scripts is disabled`` | Activation needs script permission for this user: `Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser`, reopen the terminal. Or use `cmd.exe` with `.venv\Scripts\activate.bat`, or Git Bash with `source .venv/bin/activate`. |
 | `careerpilot: command not found` | The venv is not active in this terminal. Reactivate. On Windows it is `.venv\Scripts\careerpilot.exe` if you need the absolute path. |
-| `no recorded answer for this prompt, and live model calls are off` | You have not turned on live model calls — see *Add a model key* in Install. Until you do, `collect`, `jobs`, `closing`, `ats`, `start-here` and `traces` all work; `rank` works for postings it has scored before. This is one sentence rather than a crash because the fix is in your environment, not in the code. |
+| `no recorded answer for this prompt, and live model calls are off` | You have not turned on live model calls — see *Add a model key* in Install. Until you do, `collect`, `jobs`, `closing`, `ats`, `start-here`, `traces` and `keys` all work; `rank` works for postings it has scored before. This is one sentence rather than a crash because the fix is in your environment, not in the code. |
 | `no job with uid '41'` | Part of a uid was passed. The uid is the whole first column of `jobs`, colon included: `bdtechjobs:41`. |
 | `GROQ_API_KEY is not set` | The key is missing from both your shell and `.env`. Note `.env` must be named exactly that, and `CAREERPILOT_LIVE` must be the literal string `1`. |
 | `no provider credential in the environment or in .env` from `record-fixtures` | Neither key is visible to the process. `.env` is read from the project folder, not from your home directory. |
@@ -676,7 +686,7 @@ count when a tech term is in the same title, so "Python Automation Intern" is ke
 | `jobs --where bd` returns almost nothing | Your `contact.location` has no country in it, so nothing matches as "in Bangladesh". Put the country in the address — this is the line the whole location verdict is read from. |
 | `tailor` exits with code 2 | A blocked location or a passed deadline, refused before any spend. Read the `refusing:` line; use `--ignore-location` / `--ignore-deadline` only when the board's own field is wrong. |
 | `rank` prints `N over the --max-new budget` | Not an error: those postings were reachable but unscored because you capped the run. Re-run tomorrow — already-scored ones are reused for free, and the queue continues where it stopped. |
-| `gave up after N attempt(s)` and a line starting `fix:` | The AI layer did its job: it refused to guess. Either the day's Groq tokens are spent (free tier resets at midnight UTC, and `careerpilot traces` shows what today cost) or the fallback provider has no key. Set `GEMINI_API_KEY` in `.env` and the same command runs today. |
+| `gave up after N attempt(s)` and a line starting `fix:` | The AI layer did its job: it refused to guess. Either the day's Groq tokens are spent (free tier resets at midnight UTC, and `careerpilot traces` shows what today cost) or a fallback hop has no key. `careerpilot keys` names which, and the `fix:` line is derived from the providers that actually answered — if it says a fallback refused the request itself, that is not your quota and re-running will not help. |
 | A command prints `… <stage>` lines forever | Those are progress on stderr, not output. A stage taking tens of seconds is one model call over the network, not a hang — Ctrl+C is safe, since every score commits as it lands. |
 | `ats` puts a keyword you know under `NOT IN YOUR FACT BASE` | The checker is right about the file, not about you: the term is not in any atom. Add the atom (if it is true) with `start-here --out` on a fresh file or by editing `data/profile.yaml`, then re-run. If the term is a compound like `Git/GitHub`, it is now split into its halves. |
 | `start-here` says the file exists | It will not overwrite a fact base you already have. Either point `--out` somewhere else or pass `--force` deliberately. |

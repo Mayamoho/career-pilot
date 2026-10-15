@@ -461,3 +461,42 @@ def test_md_style_writes_no_html(
 
     assert result.exit_code == 0, result.output
     assert not list(out.rglob("*.html"))
+
+
+_SECRETS = ("GROQ_API_KEY", "GEMINI_API_KEY", "CEREBRAS_API_KEY", "OPENROUTER_API_KEY")
+
+
+def test_keys_names_every_hop_and_what_is_missing(
+    runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`Which key do I need?` is the first question, and it is answered from the chain.
+
+    The list is read off `MODEL_CHAIN`, so a hop added in config.py appears here without
+    anyone remembering to edit a help string — the same drift that left `--help` silent
+    about uids until it was reported by a person using the tool.
+    """
+    for name in _SECRETS:
+        monkeypatch.setenv(name, "")
+
+    result = runner.invoke(app, ["keys"])
+
+    assert result.exit_code == 0
+    out = _output(result)
+    for name in _SECRETS:
+        assert name in out
+    assert out.count("NOT SET") == 4
+    assert "Nothing is configured" in out
+
+
+def test_keys_counts_the_providers_that_are_actually_usable(
+    runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for name in _SECRETS:
+        monkeypatch.setenv(name, "")
+    monkeypatch.setenv("GROQ_API_KEY", "gsk-test")
+
+    out = _output(runner.invoke(app, ["keys"]))
+
+    assert "1. groq" in out
+    assert out.count("NOT SET") == 3
+    assert "Add hop 2" in out
