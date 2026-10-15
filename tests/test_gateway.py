@@ -20,10 +20,15 @@ from careerpilot.ai.errors import (
     NoRecordingError,
 )
 from careerpilot.ai.gateway import SYSTEM_PREAMBLE, AIGateway
-from careerpilot.ai.providers import PROVIDERS, GeminiProvider, GroqProvider
+from careerpilot.ai.providers import PROVIDERS, GeminiProvider, GroqProvider, _gemini_schema
 from careerpilot.ai.schemas import StructuredOutput
 from careerpilot.ai.trace import TraceSink
 from careerpilot.config import FALLBACK, live_mode_enabled, require_secret
+from careerpilot.ground.gate import Claim, ClaimList, EntailmentVerdict
+from careerpilot.match.extract import ExtractedRequirement, RequirementSet
+from careerpilot.match.score import EvidenceCitation
+from careerpilot.tailor.bullets import BulletDraft, DraftedBullet
+from careerpilot.tailor.letter import DraftedParagraph, LetterDraft
 
 
 class Answer(StructuredOutput):
@@ -408,3 +413,86 @@ def test_an_env_file_cannot_switch_the_suite_live(
     finally:
         config.load_env_file.cache_clear()
         monkeypatch.delenv("CAREERPILOT_LIVE", raising=False)
+
+
+CONTRACTS: list[Any] = [
+    RequirementSet,
+    ExtractedRequirement,
+    EvidenceCitation,
+    BulletDraft,
+    DraftedBullet,
+    LetterDraft,
+    DraftedParagraph,
+    ClaimList,
+    Claim,
+    EntailmentVerdict,
+]
+
+
+@pytest.mark.parametrize("contract", CONTRACTS, ids=lambda c: c.__name__)
+def test_no_contract_sends_gemini_a_reference_it_cannot_resolve(
+    contract: type[StructuredOutput],
+) -> None:
+    """Every task's schema, translated, must be self-contained.
+
+    Gemini's `responseSchema` has no `$ref`, and pydantic puts one wherever a field holds a
+    submodel — which is most of the array fields in this codebase. Measured live on
+    2026-10-16: `extract_requirements` died with HTTP 400 `Unknown name "$ref"`, so the
+    second hop of the chain had never worked for the tasks that needed it. A test over the
+    real contracts is the only thing that catches the next submodel someone adds.
+    """
+    body = json.dumps(_gemini_schema(contract.provider_schema()))
+
+    assert "$ref" not in body, f"{contract.__name__} still carries an unresolved reference"
+    assert "$defs" not in body
+
+
+def test_the_gemini_request_inlines_a_submodel_array(live: AIGateway) -> None:
+    with respx.mock:
+        respx.post(GROQ_URL).mock(
+            return_value=httpx.Response(
+                429, text="Rate limit reached on tokens per day (TPD): Limit 200000"
+            )
+        )
+        gemini = respx.post(GEMINI_URL).mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "candidates": [
+                        {
+                            "content": {
+                                "parts": [
+                                    {
+                                        "text": json.dumps(
+                                            {
+                                                "requirements": [
+                                                    {
+                                                        "text": "PHP required",
+                                                        "skill": "php",
+                                                        "category": "must_have",
+                                                    }
+                                                ],
+                                                "seniority": "intern",
+                                                "location_constraint": "bangladesh",
+                                            }
+                                        )
+                                    }
+                                ]
+                            }
+                        }
+                    ]
+                },
+            )
+        )
+        result = live.ask(
+            task="extract_requirements",
+            system=SYSTEM,
+            user=USER,
+            schema=RequirementSet,
+        )
+
+    sent = json.loads(gemini.calls[0].request.content)
+    schema = sent["generationConfig"]["responseSchema"]
+    assert "$ref" not in json.dumps(schema)
+    assert schema["properties"]["requirements"]["items"]["type"] == "OBJECT"
+    assert result.requirements[0].skill == "php"

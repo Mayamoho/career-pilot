@@ -75,9 +75,15 @@ class ModelSpec(BaseModel):
 PRIMARY = ModelSpec(
     provider="groq", model="openai/gpt-oss-120b", input_per_1m=0.15, output_per_1m=0.60
 )
-FALLBACK = ModelSpec(
-    provider="gemini", model="gemini-2.0-flash-001", input_per_1m=0.10, output_per_1m=0.40
-)
+# Re-pinned 2026-10-16 against the key itself, not from memory: `GET /v1beta/models` on this
+# credential has no `gemini-2.0-flash-001` at all, so the second hop would have died on a 404
+# exactly when it was needed most. `gemini-2.5-flash` is present and is the only flash id in
+# that list that is neither `-preview` nor `-latest` — pinned suffixes rot, which is the same
+# mistake that killed the Groq hop yesterday.
+# Zero rates because the developer free tier is what is actually used here; `traces` therefore
+# under-reports Gemini work rather than inventing a price nobody verified today.
+FALLBACK = ModelSpec(provider="gemini", model="gemini-2.5-flash", input_per_1m=0.0,
+                     output_per_1m=0.0)
 # Cerebras and OpenRouter are added as deeper quota, not as verified-working hops: their
 # model ids were read off each provider's own public model list on 2026-10-16, but neither
 # has been exercised from this machine because no key for them exists yet. A model id that

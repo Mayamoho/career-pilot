@@ -232,30 +232,62 @@ def _openai_style_reply(response: httpx.Response, model: ModelSpec) -> ProviderR
     )
 
 
-def _gemini_schema(node: dict[str, Any]) -> dict[str, Any]:
-    """Trim JSON Schema down to what Gemini's responseSchema accepts."""
+_GEMINI_DROP = {"$defs", "definitions", "title", "$schema", "additionalProperties", "$ref"}
+_GEMINI_TYPES = {
+    "string": "STRING",
+    "number": "NUMBER",
+    "integer": "INTEGER",
+    "boolean": "BOOLEAN",
+    "object": "OBJECT",
+    "array": "ARRAY",
+}
+
+
+def _deref(node: dict[str, Any], root: dict[str, Any]) -> dict[str, Any] | None:
+    """The definition a `$ref` points at, if this node is a reference we can resolve."""
+    ref = node.get("$ref")
+    if not isinstance(ref, str) or not ref.startswith("#/$defs/"):
+        return None
+    target = (root.get("$defs") or {}).get(ref.rsplit("/", 1)[-1])
+    return target if isinstance(target, dict) else None
+
+
+def _gemini_schema(node: Any, root: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Trim JSON Schema down to what Gemini's responseSchema accepts.
+
+    Two shapes that pydantic generates and Gemini refuses, both seen in a live 400 on
+    2026-10-16: `$ref`/`$defs`, which Gemini has no concept of, and the difference between
+    `properties` (a map of schemas) and `items` (one schema). Treating `items` as a map
+    passed a requirement submodel's `{"$ref": …}` through untouched, and the answer came
+    back as `Unknown name "$ref" at '…response_schema.properties[0].value.items'` with the
+    generation discarded — which is why the second hop of the chain never actually worked.
+    """
+    if root is None:
+        root = node
     if not isinstance(node, dict):
-        return node
+        # A boolean schema node means "any value", which Gemini spells as an empty schema.
+        return {}
+    referenced = _deref(node, root)
+    if referenced is not None:
+        return _gemini_schema(referenced, root)
     keep: dict[str, Any] = {}
     for key, value in node.items():
-        if key in {"$defs", "definitions", "title", "$schema", "additionalProperties"}:
+        if key in _GEMINI_DROP:
             continue
         if key == "anyOf" and isinstance(value, list):
             non_null = [v for v in value if v != {"type": "null"}]
             if len(non_null) == 1:
-                keep["type"] = "STRING" if non_null[0].get("type") == "string" else None
-                merged = _gemini_schema(non_null[0])
-                keep.update({k: v for k, v in merged.items() if k != "type"})
-                keep.setdefault("nullable", True)
+                keep["type"] = None
+                keep.update(_gemini_schema(non_null[0], root))
+                keep["nullable"] = True
                 continue
         if key == "type" and isinstance(value, str):
-            keep["type"] = {"string": "STRING", "number": "NUMBER", "integer": "INTEGER",
-                            "boolean": "BOOLEAN", "object": "OBJECT", "array": "ARRAY"}.get(
-                                value.upper(), value.upper())
-        elif key in {"properties", "items"} and isinstance(value, dict):
-            keep[key] = {k: _gemini_schema(v) for k, v in value.items()}
-        elif key == "items" and isinstance(value, list):
-            keep[key] = _gemini_schema(value[0])
+            keep["type"] = _GEMINI_TYPES.get(value.upper(), value.upper())
+        elif key == "properties" and isinstance(value, dict):
+            keep[key] = {k: _gemini_schema(v, root) for k, v in value.items()}
+        elif key == "items":
+            one = value[0] if isinstance(value, list) else value
+            keep[key] = _gemini_schema(one, root)
         elif key in {"required", "enum", "description"}:
             keep[key] = value
     return {k: v for k, v in keep.items() if v is not None}

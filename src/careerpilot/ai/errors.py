@@ -100,16 +100,26 @@ class ExhaustedRetriesError(AIError):
 
 _DAILY_QUOTA = re.compile(r"per day|\(TPD\)|daily", re.I)
 _MISSING_KEY = re.compile(r"MissingProviderCredential|is not set", re.I)
+# A provider that answered 4xx/5xx on something that is not a quota refused the request
+# itself. Telling that user to go set a key they already set sends them editing .env for
+# nothing, when the fault is in what we sent.
+_REFUSED = re.compile(r"HTTP [45]\d\d")
 
 
 def _hint(causes: list[str]) -> str:
     """The one action the reader can actually take, derived from the causes, in code.
 
-    A stack trace of provider JSON is not a next step. These two failures are the ones a
-    free-tier user hits every day, and each has exactly one answer: wait for the window,
-    or set the key. Nothing here is invented — it is read off the causes that were raised.
+    A stack trace of provider JSON is not a next step. These failures each have exactly one
+    answer: wait for the window, set the missing key, or accept that a provider refused the
+    payload we built. Nothing here is invented — it is read off the causes that were raised.
     """
     blob = " | ".join(causes)
+    refused = [c for c in causes if _REFUSED.search(c) and not _DAILY_QUOTA.search(c)]
+    if refused:
+        return (
+            "\nfix: a fallback provider was reached and refused the request itself, so this "
+            f"is not your daily quota: {refused[-1][:180]}"
+        )
     if _DAILY_QUOTA.search(blob):
         return (
             "\nfix: your Groq daily token quota is spent (free tier resets at midnight "
