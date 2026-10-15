@@ -20,7 +20,12 @@ from typing import TYPE_CHECKING
 
 from pydantic import ValidationError
 
-from careerpilot.ai.errors import ContractError, ExhaustedRetriesError, TransportError
+from careerpilot.ai.errors import (
+    ContractError,
+    ExhaustedRetriesError,
+    NoRecordingError,
+    TransportError,
+)
 from careerpilot.ai.schemas import OutputT, StructuredOutput
 from careerpilot.ai.trace import CallRecord, Timer, TraceSink, default_sink
 from careerpilot.config import (
@@ -89,12 +94,7 @@ class AIGateway:
             replayed = self._replay(task=task, key=key, schema=schema)
             if replayed is not None:
                 return replayed
-            raise ContractError(
-                task,
-                "no recorded response for this prompt and CAREERPILOT_LIVE is not set. "
-                "Record one with `careerpilot record-fixtures`, or run with "
-                "CAREERPILOT_LIVE=1 and provider credentials. Tests never call a real model.",
-            )
+            raise NoRecordingError(task)
 
         return self._call_live(task=task, system=full_system, user=user, schema=schema, key=key)
 

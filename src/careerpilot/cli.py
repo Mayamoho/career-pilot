@@ -9,14 +9,23 @@ from __future__ import annotations
 
 import json
 import os
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Annotated
 
 import typer
 
 from careerpilot import pipeline
+from careerpilot.ai.errors import AIError
 from careerpilot.ai.gateway import get_gateway, set_gateway
-from careerpilot.config import FIXTURES_DIR, live_mode_enabled, profile_path
+from careerpilot.config import (
+    FIXTURES_DIR,
+    MissingCredentialError,
+    live_mode_enabled,
+    load_env_file,
+    profile_path,
+)
 from careerpilot.domain.job import JobPosting
 from careerpilot.domain.place import Place, home_country, place_of
 from careerpilot.ingest.boards import BOARDS
@@ -43,6 +52,21 @@ def _profile(path: Path | None) -> Profile:
 
 def _store(path: Path | None) -> JobStore:
     return JobStore(path)
+
+
+@contextmanager
+def _spoken_not_dumped() -> Iterator[None]:
+    """Turn an AI-layer failure into a sentence, not a stack trace.
+
+    Every error caught here is a state of the user's environment — no key, live mode off,
+    no recording for this prompt — and none of them are fixed by reading Python internals.
+    A traceback for those is not diagnostics, it is the tool failing to explain itself.
+    """
+    try:
+        yield
+    except (AIError, MissingCredentialError) as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
 
 
 @app.command()
@@ -133,7 +157,8 @@ def score_job(
         job = store.get(uid)
         if job is None:
             raise typer.BadParameter(f"no job with uid {uid!r}")
-        scored = pipeline.score(job, candidate, store=store)
+        with _spoken_not_dumped():
+            scored = pipeline.score(job, candidate, store=store)
         loc = scored.fit.location
         verdict = "workable" if loc.workable else "NOT WORKABLE"
         typer.echo(f"{scored.fit.total:.1f}/100 — {scored.fit.band}")
@@ -179,7 +204,8 @@ def tailor(
             typer.echo(f"refusing: {place.note} — home is {place.home}.")
             typer.echo("pass --ignore-location to tailor it anyway.")
             raise typer.Exit(code=2)
-        result = pipeline.tailor(job, candidate, store=store)
+        with _spoken_not_dumped():
+            result = pipeline.tailor(job, candidate, store=store)
         artifacts = render.write(result, candidate, out)
         bullets = result.bullets.report
         typer.echo(f"fit {result.fit.total:.1f}/100 ({result.fit.band})")
@@ -214,8 +240,11 @@ def record_fixtures(
     Recording is the only place where a live call is expected without the operator
     having to remember the environment variable, so the cost is a deliberate act.
     """
-    if not os.environ.get("GROQ_API_KEY") and not os.environ.get("GEMINI_API_KEY"):
-        raise typer.BadParameter("no provider credential in the environment")
+    load_env_file()
+    if not any(os.environ.get(name, "").strip() for name in ("GROQ_API_KEY", "GEMINI_API_KEY")):
+        raise typer.BadParameter(
+            "no provider credential in the environment or in .env — see the README"
+        )
     os.environ["CAREERPILOT_LIVE"] = "1"
     live_mode_enabled.cache_clear()
     cassette_dir = FIXTURES_DIR / "cassettes"
@@ -228,7 +257,8 @@ def record_fixtures(
             if job is None:
                 typer.echo(f"skipping {uid}: not in store")
                 continue
-            pipeline.tailor(job, candidate, store=store)
+            with _spoken_not_dumped():
+                pipeline.tailor(job, candidate, store=store)
             typer.echo(f"recorded {uid}")
     finally:
         store.close()

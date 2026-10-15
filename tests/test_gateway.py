@@ -13,7 +13,7 @@ from pydantic import Field
 
 from careerpilot import config
 from careerpilot.ai.cassette import CassetteStore
-from careerpilot.ai.errors import ContractError, ExhaustedRetriesError
+from careerpilot.ai.errors import ContractError, ExhaustedRetriesError, NoRecordingError
 from careerpilot.ai.gateway import SYSTEM_PREAMBLE, AIGateway
 from careerpilot.ai.providers import PROVIDERS, GeminiProvider, GroqProvider
 from careerpilot.ai.schemas import StructuredOutput
@@ -52,8 +52,14 @@ def test_replay_from_cassette_without_any_provider(gateway: AIGateway, tmp_casse
 
 
 def test_unrecorded_prompt_is_refused_in_non_live_mode(gateway: AIGateway) -> None:
-    with pytest.raises(ContractError, match="record-fixtures"):
+    """And refused *honestly*: no model was ever asked, so the message may not claim the
+    model answered in the wrong shape — that sends the reader to debug a prompt that ran
+    in neither case."""
+    with pytest.raises(NoRecordingError, match="record-fixtures") as excinfo:
         gateway.ask(task="answer", system=SYSTEM, user=USER, schema=Answer)
+
+    assert "schema validation" not in str(excinfo.value)
+    assert "CAREERPILOT_LIVE" in str(excinfo.value)
 
 
 def test_changing_the_prompt_invalidates_the_recording(
@@ -63,7 +69,7 @@ def test_changing_the_prompt_invalidates_the_recording(
     key = gateway.cache_key("answer", _full_system(), USER, Answer)
     tmp_cassette.put(key, text='{"text": "grounded", "score": 8}', model="m", task="answer")
 
-    with pytest.raises(ContractError):
+    with pytest.raises(NoRecordingError):
         gateway.ask(task="answer", system=SYSTEM + " ", user=USER, schema=Answer)
 
 
@@ -173,12 +179,12 @@ def test_a_dotenv_file_in_the_project_directory_supplies_the_credential(
     (tmp_path / ".env").write_text("GROQ_API_KEY=gsk_from_the_file\n", encoding="utf-8")
     monkeypatch.setattr(config, "REPO_ROOT", tmp_path)
     monkeypatch.delenv("GROQ_API_KEY", raising=False)
-    config._read_env_file.cache_clear()
+    config.load_env_file.cache_clear()
     try:
         assert require_secret("GROQ_API_KEY") == "gsk_from_the_file"
     finally:
         # load_dotenv writes straight into os.environ, which monkeypatch does not undo.
-        config._read_env_file.cache_clear()
+        config.load_env_file.cache_clear()
         monkeypatch.delenv("GROQ_API_KEY", raising=False)
 
 
@@ -189,11 +195,11 @@ def test_a_credential_exported_in_the_shell_outranks_the_env_file(
     (tmp_path / ".env").write_text("GROQ_API_KEY=gsk_from_the_file\n", encoding="utf-8")
     monkeypatch.setattr(config, "REPO_ROOT", tmp_path)
     monkeypatch.setenv("GROQ_API_KEY", "gsk_from_the_shell")
-    config._read_env_file.cache_clear()
+    config.load_env_file.cache_clear()
     try:
         assert require_secret("GROQ_API_KEY") == "gsk_from_the_shell"
     finally:
-        config._read_env_file.cache_clear()
+        config.load_env_file.cache_clear()
 
 
 def test_an_env_file_cannot_switch_the_suite_live(
@@ -205,9 +211,9 @@ def test_an_env_file_cannot_switch_the_suite_live(
     """
     (tmp_path / ".env").write_text("CAREERPILOT_LIVE=1\n", encoding="utf-8")
     monkeypatch.setattr(config, "REPO_ROOT", tmp_path)
-    config._read_env_file.cache_clear()
+    config.load_env_file.cache_clear()
     try:
         assert live_mode_enabled() is False
     finally:
-        config._read_env_file.cache_clear()
+        config.load_env_file.cache_clear()
         monkeypatch.delenv("CAREERPILOT_LIVE", raising=False)

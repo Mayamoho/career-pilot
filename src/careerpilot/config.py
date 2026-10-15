@@ -19,7 +19,7 @@ FIXTURES_DIR = REPO_ROOT / "tests" / "fixtures"
 
 
 @lru_cache
-def _read_env_file() -> bool:
+def load_env_file() -> bool:
     """Load `<repo>/.env` once, on first need.
 
     Lazily rather than at import, so pulling in this module changes nothing in the
@@ -83,7 +83,7 @@ GROUNDING_MIN_CONFIDENCE = 0.75
 
 
 def require_secret(name: str) -> str:
-    _read_env_file()
+    load_env_file()
     value = os.environ.get(name, "").strip()
     if not value:
         raise MissingCredentialError(name)
@@ -107,5 +107,5 @@ def live_mode_enabled() -> bool:
     then holds the whole switch, identically on Linux, macOS and a Windows terminal
     where `export` does not exist. Cached because it is read on every model call.
     """
-    _read_env_file()
+    load_env_file()
     return os.environ.get("CAREERPILOT_LIVE", "").strip() == "1"

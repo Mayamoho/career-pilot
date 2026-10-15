@@ -37,6 +37,27 @@ class ContractError(AIError):
         self.raw = raw
 
 
+class NoRecordingError(AIError):
+    """Nothing answered at all: no recorded reply, and live calls are switched off.
+
+    This is deliberately *not* a ContractError. That class means the model did reply and
+    the reply was malformed, which is retryable and is worth a repair attempt. Here no
+    model was ever asked, so telling a user their output "failed schema validation"
+    sends them to debug a prompt that was never run. It is a setup state, and the fix is
+    in their environment, not in the code.
+    """
+
+    def __init__(self, task: str) -> None:
+        super().__init__(
+            f"{task}: no recorded answer for this prompt, and live model calls are off "
+            "(CAREERPILOT_LIVE is not set). To run it for real, copy .env.example to .env "
+            "in this folder, put your GROQ_API_KEY in it and leave CAREERPILOT_LIVE=1. "
+            "To record answers for CI instead, run `careerpilot record-fixtures <uid>`. "
+            "Tests never call a real model, which is the reason this switch exists."
+        )
+        self.task = task
+
+
 class ExhaustedRetriesError(AIError):
     """Every model and every repair attempt failed. The caller must escalate."""
 
