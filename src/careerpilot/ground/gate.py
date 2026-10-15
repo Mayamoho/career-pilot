@@ -39,7 +39,10 @@ FailureKind = Literal[
 
 _YEAR_RANGE = re.compile(r"^(19\d{2}|20\d{2})$")
 _NUMBER = re.compile(r"\d+(?:\.\d+)?")
-_TECHISH = re.compile(
+# A token that looks like a technology: something punctuated ("Node.js", "CI/CD") or one
+# of the acronyms that are plain words in a job post. Shared with the ATS checker, which
+# asks the same question of a job description — one regex, so the two cannot drift.
+TECHISH = re.compile(
     r"\b[A-Za-z][A-Za-z0-9]*(?:[.#/+][A-Za-z0-9]+)+\b"
     r"|\b(?:Go|SQL|RAG|LLM|API|CI|CD|AWS|GCP|ML)\b"
 )
@@ -205,7 +208,7 @@ def _misattributed_tech(text: str, atoms: list[Atom], profile: Profile) -> list[
             detail=f'"{term}" is in the profile but not in the cited evidence',
         ))
 
-    for token in _TECHISH.findall(text):
+    for token in TECHISH.findall(text):
         consider(token)
     for atom in profile.atoms:
         for skill in atom.skills:

@@ -13,9 +13,28 @@ from collections.abc import Iterable
 from datetime import UTC, datetime
 from pathlib import Path
 
+from pydantic import BaseModel
+
 from careerpilot.config import DATA_DIR
 from careerpilot.domain.job import JobPosting
 from careerpilot.match.score import FitScore
+
+
+class SavedFit(BaseModel):
+    """A fit score already in the database, in the shape a ranking needs.
+
+    Deliberately not a `FitScore`: rebuilding the per-requirement outcomes would need
+    the requirement extraction, which is the part that costs a model call.
+    """
+
+    uid: str
+    total: float
+    band: str
+    matched: int
+    required: int
+    workable: bool
+    place_note: str
+    scored_at: str
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS jobs (
@@ -177,6 +196,31 @@ class JobStore:
             (like, like, limit),
         ).fetchall()
         return [JobPosting.model_validate(json.loads(r["payload"])) for r in rows]
+
+    def saved_score(self, uid: str) -> SavedFit | None:
+        """Read back a score already paid for, so a second run costs nothing.
+
+        This is the whole reason `rank` can be run on a free tier: the batch asks the
+        model once per posting, and every later run sorts on this row instead.
+        """
+        row = self._conn.execute(
+            "SELECT total, band, matched, required, detail, scored_at FROM scores WHERE uid = ?",
+            (uid,),
+        ).fetchone()
+        if row is None:
+            return None
+        detail = json.loads(row["detail"])
+        location = detail.get("location") or {}
+        return SavedFit(
+            uid=uid,
+            total=float(row["total"]),
+            band=str(row["band"]),
+            matched=int(row["matched"]),
+            required=int(row["required"]),
+            workable=bool(location.get("workable", True)),
+            place_note=str(location.get("note") or ""),
+            scored_at=str(row["scored_at"]),
+        )
 
     def record_board_health(self, source: str, token: str, ok: bool, count: int) -> None:
         self._conn.execute(

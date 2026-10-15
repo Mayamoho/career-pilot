@@ -1,27 +1,45 @@
-"""Adapters for the three ATS providers with genuinely public, keyless job feeds.
+"""Adapters for the ATS providers with genuinely public, keyless job feeds.
 
 Verified shapes (October 2026):
   Greenhouse  https://boards-api.greenhouse.io/v1/boards/{token}/jobs?content=true
   Ashby       https://api.ashbyhq.com/posting-api/job-board/{name}?includeCompensation=true
   Lever       https://api.lever.co/v0/postings/{site}?mode=json
+  bdjobs      https://gateway.bdjobs.com/…/JobSearch/GetJobSearch  (+ jobDetails?jobId=)
+  Jobicy      https://jobicy.com/api/v2/remote-jobs?geo={slug}
 
-Each endpoint is per-company. There is no cross-company search and no directory of
-tokens, so the curated token list in `boards.py` — not the fetching — is the real
-asset. Ashby is the highest-yield of the three because most AI companies moved there;
-Lever is kept because it is cheap, but its install base has thinned considerably.
+The first three are per-company; there is no cross-company search and no directory of
+tokens, so the curated token list in `boards.py` — not the fetching — is the real asset.
+Ashby is the highest-yield of the three because most AI companies moved there; Lever is
+kept because it is cheap, but its install base has thinned considerably.
+
+bdjobs and Jobicy are aggregated: one endpoint, thousands of employers. They also fail in
+opposite directions, which is the reason both are written out rather than assumed.
+bdjobs answers `200` with unfiltered rows for any parameter it does not know, so a filter
+we believe is applied may not be. Jobicy answers `400 Unexpected parameter` for the same
+mistake, so a typo fails loudly instead of quietly widening the result set.
 """
 
 from __future__ import annotations
 
 import re
+import time
 from typing import Any
 
 import httpx
 
+from careerpilot.config import BDJOBS_DETAIL_LIMIT, BDJOBS_DETAIL_SLEEP_S
 from careerpilot.domain.job import JobPosting, coerce_datetime, html_to_text
 from careerpilot.ingest.base import get_json
+from careerpilot.ingest.filter import wanted_title
 
 _ONE_LINE = re.compile(r"\s+")
+
+# Jobicy's `salaryPeriod` is prose, not an enum: live rows say "monthly" and "yearly".
+_PERIODS = {
+    "year": "per year", "yearly": "per year", "annum": "per year",
+    "month": "per month", "monthly": "per month",
+    "hour": "per hour", "hourly": "per hour",
+}
 
 
 class GreenhouseAdapter:
@@ -188,9 +206,263 @@ class BdTechJobsAdapter:
                     url=url,
                     apply_url=url,
                     published_at=coerce_datetime(row.get("postedDate")),
+                    deadline=coerce_datetime(deadline),
                 )
             )
         return out
+
+
+class BdJobsAdapter:
+    """bdjobs.com — the Bangladeshi market, through the endpoints its own site calls.
+
+    There is no documented API here, so two things are enforced rather than trusted.
+    The detail endpoint is one request per job, so it is called only for rows that pass
+    the title filter and only up to `BDJOBS_DETAIL_LIMIT` of them, with a pause between:
+    this is somebody's production server answering a personal job search. And the field
+    names are read exactly as measured, including `CompnayName`, which is misspelled in
+    their own response — a guessed key here does not raise, it silently empties the board.
+    """
+
+    name = "bdjobs"
+    LIST = "https://gateway.bdjobs.com/recruitment-account-test/api/JobSearch/GetJobSearch"
+    DETAIL = "https://gateway.bdjobs.com/ActtivejobsTest/api/JobSubsystem/jobDetails"
+    PAGE = "https://jobs.bdjobs.com/jobdetails.asp?id={id}&ln=0"
+
+    def fetch_board(
+        self, client: httpx.Client, token: str, company: str | None = None
+    ) -> list[JobPosting]:
+        payload = get_json(client, self.LIST, params=_bdjobs_params(token))
+        rows = payload.get("data") if isinstance(payload, dict) else None
+        if not isinstance(rows, list):
+            return []
+
+        out: list[JobPosting] = []
+        detailed = 0
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            posting = _bdjobs_posting(row, company)
+            if posting is None:
+                continue
+            # The list row carries a one-line description; fit is scored on prose, so the
+            # body is fetched only for postings that would survive `collect` anyway.
+            if detailed < BDJOBS_DETAIL_LIMIT and wanted_title(posting.title):
+                detail = self._detail(client, posting.source_id)
+                if detail is not None:
+                    posting = posting.model_copy(update={"description": _bdjobs_full_body(
+                        posting.description, detail
+                    )})
+                    if detail.get("JobLocation"):
+                        posting = posting.model_copy(update={
+                            "location": str(detail["JobLocation"]),
+                        })
+                detailed += 1
+                time.sleep(BDJOBS_DETAIL_SLEEP_S)
+            out.append(posting)
+        return out
+
+    def _detail(self, client: httpx.Client, job_id: str) -> dict[str, Any] | None:
+        payload = get_json(client, self.DETAIL, params={"jobId": job_id}, retries=1)
+        if not isinstance(payload, dict):
+            return None
+        data = payload.get("data")
+        return data[0] if isinstance(data, list) and data and isinstance(data[0], dict) else None
+
+
+class JobicyAdapter:
+    """Jobicy — remote-only, with the reachable region and the seniority stated as fields.
+
+    Every row is remote, so `location` is the region the employer named and `is_remote`
+    is never a claim that has to be checked against prose. `jobLevel` is the reason this
+    source earns its place in a fresher's tool: it is the only feed here that states
+    "Entry-Level, Junior" as data instead of hoping the title says so.
+
+    The token is a `geo` slug. Unknown slugs answer 400 and `get_json` turns that into an
+    empty board, which `collect` then reports as dead — a wrong token is visible, not
+    silently broad.
+    """
+
+    name = "jobicy"
+    BASE = "https://jobicy.com/api/v2/remote-jobs"
+    PAGES = 2
+
+    def fetch_board(
+        self, client: httpx.Client, token: str, company: str | None = None
+    ) -> list[JobPosting]:
+        out: list[JobPosting] = []
+        cursor: str | None = None
+        for _ in range(self.PAGES):
+            params: dict[str, Any] = {"geo": token}
+            if cursor:
+                params["cursor"] = cursor
+            payload = get_json(client, self.BASE, params=params)
+            if not isinstance(payload, dict):
+                return out
+            for row in payload.get("jobs") or []:
+                if isinstance(row, dict):
+                    posting = _jobicy_posting(row, company)
+                    if posting is not None:
+                        out.append(posting)
+            cursor = payload.get("nextCursor")
+            if not cursor or not payload.get("hasMore"):
+                break
+        return out
+
+
+def _bdjobs_params(token: str) -> dict[str, Any]:
+    """A page number, or `keyword:<stack>`.
+
+    Measured against the live endpoint: `keyword`, `pg` and `rpp` change the rows that
+    come back; `category`, `location`, `jobType` and `sort` are accepted and ignored.
+    So narrowing by stack is the only server-side filter worth asking for, and everything
+    else is done in code after the rows land here.
+    """
+    params: dict[str, Any] = {"isPro": "1", "rpp": 50, "pg": 1}
+    if token.startswith("keyword:"):
+        params["keyword"] = token.split(":", 1)[1].strip().lower()
+    elif token.isdigit():
+        params["pg"] = int(token)
+    return params
+
+
+def _bdjobs_posting(row: dict[str, Any], company: str | None = None) -> JobPosting | None:
+    job_id = str(row.get("Jobid") or "").strip()
+    title = _one_line(row.get("jobTitle"))
+    if not job_id or not title:
+        return None
+    page = BdJobsAdapter.PAGE.format(id=job_id)
+    workplace = str(row.get("WorkPlace") or "").strip()
+    salary = row.get("Salary")
+    return JobPosting(
+        source="bdjobs",
+        source_id=job_id,
+        company=_one_line(row.get("companyName")) or company or "bdjobs employer",
+        title=title,
+        description=_bdjobs_list_body(row, salary),
+        location=str(row.get("location") or "").strip() or None,
+        is_remote=workplace.lower() in {"home", "remote", "work from home"},
+        employment_type=str(row.get("JobType") or "").strip() or None,
+        seniority=str(row.get("experience") or "").strip() or None,
+        url=page,
+        apply_url=page,
+        published_at=coerce_datetime(row.get("publishDate")),
+        deadline=coerce_datetime(row.get("deadlineDB")),
+        compensation=_bdjobs_salary(salary),
+    )
+
+
+def _bdjobs_salary(salary: Any) -> str | None:
+    if not isinstance(salary, dict):
+        return None
+    low, high = salary.get("MinSalary"), salary.get("MaxSalary")
+    if not low and not high:
+        return None
+    if low and high and low != high:
+        return f"Tk. {low} - {high}"
+    return f"Tk. {low or high}"
+
+
+def _fold(fields: dict[str, str]) -> str:
+    """Render `label: value` lines, skipping blanks and exact repeats.
+
+    bdjobs sends the same sentence three ways: the list row's `jobDescription` is a copy
+    of its `eduRec`, and the detail endpoint restates the salary with the period attached.
+    Duplicated prose is duplicated evidence — the scorer counts term hits, so a paragraph
+    pasted twice reads as a requirement mentioned twice.
+    """
+    lines: list[str] = []
+    seen: set[str] = set()
+    for label, value in fields.items():
+        text = value.strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        lines.append(text if not label else f"{label}: {text}")
+    return "\n".join(lines)
+
+
+def _bdjobs_list_body(row: dict[str, Any], salary: Any) -> str:
+    """Fold the structured list fields into prose, because fit is scored on the text."""
+    return _fold({
+        "": html_to_text(str(row.get("jobDescription") or "")),
+        "Education": html_to_text(str(row.get("eduRec") or "")),
+        "Additional requirements": html_to_text(str(row.get("jobContext") or "")),
+        "Experience": str(row.get("experience") or ""),
+        "Job type": str(row.get("JobType") or ""),
+        "Work place": str(row.get("WorkPlace") or ""),
+        "Location": str(row.get("location") or ""),
+        "Salary": _bdjobs_salary(salary) or "",
+        "Vacancies": str(row.get("Vacancies") or ""),
+        "Application deadline": str(row.get("deadline") or ""),
+    })
+
+
+def _bdjobs_full_body(existing: str, detail: dict[str, Any]) -> str:
+    """Append the detail endpoint's prose, which the list row does not carry.
+
+    The list description is a card; the requirement text a scorer needs lives in
+    `JobDescription`, `AdditionJobRequirements` and `SkillsRequired` on the other host.
+    Both are kept: the first states the money and the deadline, the second states the job.
+    """
+    body = _fold({
+        "": html_to_text(str(detail.get("JobDescription") or "")),
+        "Additional requirements": html_to_text(
+            str(detail.get("AdditionJobRequirements") or "")
+        ),
+        "Education": html_to_text(str(detail.get("EducationRequirements") or "")),
+        "Skills required": _join(detail.get("SkillsRequired")),
+        "Suggested skills": _join(detail.get("SuggestedSkills")),
+        "Age": str(detail.get("Age") or ""),
+        "Work place": str(detail.get("JobWorkPlace") or ""),
+        "Salary": str(detail.get("JobSalaryRangeText") or ""),
+    })
+    return f"{existing}\n\n{body}" if existing and body else (body or existing)
+
+
+def _jobicy_posting(row: dict[str, Any], company: str | None = None) -> JobPosting | None:
+    job_id = str(row.get("id") or "").strip()
+    title = _one_line(row.get("jobTitle"))
+    url = str(row.get("url") or "")
+    if not job_id or not title:
+        return None
+    return JobPosting(
+        source="jobicy",
+        source_id=job_id,
+        company=_one_line(row.get("companyName")) or company or "Jobicy employer",
+        title=title,
+        description=html_to_text(
+            str(row.get("jobDescription") or row.get("jobExcerpt") or "")
+        ),
+        location=str(row.get("jobGeo") or "").strip() or "Remote",
+        is_remote=True,
+        department=_join(row.get("jobIndustry")),
+        employment_type=_join(row.get("jobType")) or None,
+        seniority=str(row.get("jobLevel") or "").strip() or None,
+        url=url,
+        apply_url=url,
+        published_at=coerce_datetime(row.get("pubDate")),
+        compensation=_jobicy_salary(row),
+    )
+
+
+def _jobicy_salary(row: dict[str, Any]) -> str | None:
+    low, high = _salary_amount(row.get("salaryMin")), _salary_amount(row.get("salaryMax"))
+    if not low and not high:
+        return None
+    currency = str(row.get("salaryCurrency") or "USD")
+    span = (
+        f"{currency} {low} - {high}" if low and high and low != high
+        else f"{currency} {low or high}"
+    )
+    # The field is `"monthly"`/`"yearly"`, not `"month"`/`"year"` — measured on live rows.
+    period = _PERIODS.get(str(row.get("salaryPeriod") or "").strip().lower())
+    return f"{span} {period}" if period else span
+
+
+def _salary_amount(value: Any) -> str:
+    """Jobicy writes the literal string `"None"` into `salaryMax` on open-ended pay."""
+    text = str(value if value is not None else "").strip()
+    return "" if text.lower() in {"", "0", "none", "null"} else text
 
 
 def _one_line(value: Any) -> str:

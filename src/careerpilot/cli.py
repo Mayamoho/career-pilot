@@ -11,6 +11,7 @@ import json
 import os
 from collections.abc import Iterator
 from contextlib import contextmanager
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated
 
@@ -19,8 +20,11 @@ import typer
 from careerpilot import pipeline
 from careerpilot.ai.errors import AIError
 from careerpilot.ai.gateway import get_gateway, set_gateway
+from careerpilot.ats.reader import read_cv, score_cv
 from careerpilot.config import (
+    DATA_DIR,
     FIXTURES_DIR,
+    REPO_ROOT,
     MissingCredentialError,
     live_mode_enabled,
     load_env_file,
@@ -30,8 +34,9 @@ from careerpilot.domain.job import JobPosting
 from careerpilot.domain.place import Place, home_country, place_of
 from careerpilot.ingest.boards import BOARDS
 from careerpilot.ingest.store import JobStore
+from careerpilot.profile import questions
 from careerpilot.profile.model import Profile, load_profile
-from careerpilot.report import render
+from careerpilot.report import render, templates
 
 app = typer.Typer(help="CareerPilot — grounded job fit and CV tailoring.", no_args_is_help=True)
 
@@ -39,6 +44,36 @@ app = typer.Typer(help="CareerPilot — grounded job fit and CV tailoring.", no_
 def _recency(job: JobPosting) -> float:
     """Sort key that keeps an undated posting newest rather than oldest."""
     return job.published_at.timestamp() if job.published_at else float("inf")
+
+
+def _naive_utc(moment: datetime) -> datetime:
+    """`coerce_datetime` stores deadlines as naive UTC; the clock here is aware."""
+    return moment.astimezone(UTC).replace(tzinfo=None) if moment.tzinfo else moment
+
+
+def _days_left(job: JobPosting, now: datetime | None = None) -> float | None:
+    """Whole days until the employer stops reading. `None` means the board says nothing."""
+    if job.deadline is None:
+        return None
+    deadline = _naive_utc(job.deadline)
+    return (deadline - _naive_utc(now or datetime.now(UTC))).total_seconds() / 86400.0
+
+
+def _place(job: JobPosting, home: str, where: str) -> Place | None:
+    """The place this posting maps to under the `--where` filter, or None to drop it."""
+    place = place_of(job, home=home)
+    if where == "all" or (where == "bd" and place.at_home) or (where == "open" and place.workable):
+        return place
+    return None
+
+
+_WHERE = ("bd", "open", "all")
+
+
+def _check_where(where: str) -> str:
+    if where not in _WHERE:
+        raise typer.BadParameter(f"choose one of: {', '.join(_WHERE)}")
+    return where
 
 ProfileOption = Annotated[
     Path | None, typer.Option("--profile", help="Candidate fact base YAML.")
@@ -105,6 +140,10 @@ def jobs(
     home: Annotated[
         str | None, typer.Option("--home", help="Override the country in the fact base.")
     ] = None,
+    source: Annotated[
+        str | None,
+        typer.Option("--source", help="One board family only: bdjobs, jobicy, ashby…"),
+    ] = None,
 ) -> None:
     """List stored postings with the location read honestly.
 
@@ -113,8 +152,7 @@ def jobs(
     and names no other country. The stored `is_remote` flag is not trusted on its own:
     Ashby sets it for roles whose only stated location is an office.
     """
-    if where not in {"bd", "open", "all"}:
-        raise typer.BadParameter("choose one of: bd, open, all")
+    _check_where(where)
     reference = home or home_country(_profile(profile))
     store = _store(db)
     try:
@@ -124,13 +162,10 @@ def jobs(
 
     shown: list[tuple[int, JobPosting, Place]] = []
     for job in rows:
-        place = place_of(job, home=reference)
-        keep = (
-            where == "all"
-            or (where == "bd" and place.at_home)
-            or (where == "open" and place.workable)
-        )
-        if keep:
+        if source and job.source != source:
+            continue
+        place = _place(job, reference, where)
+        if place is not None:
             shown.append((place.rank, job, place))
     if where != "all":
         shown.sort(key=lambda item: (item[0], -_recency(item[1])))
@@ -182,17 +217,28 @@ def tailor(
     db: DbOption = None,
     profile: ProfileOption = None,
     out: Annotated[Path | None, typer.Option("--out", help="Artifact directory.")] = None,
+    style: Annotated[
+        str,
+        typer.Option("--style", help="Print forms: ats, oxford, both, or md for markdown only."),
+    ] = "both",
     ignore_location: Annotated[
         bool,
         typer.Option("--ignore-location", help="Tailor a posting you cannot work from home."),
+    ] = False,
+    ignore_deadline: Annotated[
+        bool, typer.Option("--ignore-deadline", help="Tailor a posting whose deadline passed.")
     ] = False,
 ) -> None:
     """Score, draft, gate and write the CV, cover letter and audit trail.
 
     Refuses a posting that cannot be worked from the address in the fact base, before
     spending a single model call: a tailored CV for a job restricted to another country
-    is not a near-miss, it is a document nobody can hire you under.
+    is not a near-miss, it is a document nobody can hire you under. The same is true of
+    a deadline that has passed — and on Bangladeshi boards, most of them have.
     """
+    styles = {"md": (), "ats": ("ats",), "oxford": ("oxford",), "both": templates.STYLES}.get(style)
+    if styles is None:
+        raise typer.BadParameter("choose one of: md, ats, oxford, both")
     candidate = _profile(profile)
     store = _store(db)
     try:
@@ -204,12 +250,19 @@ def tailor(
             typer.echo(f"refusing: {place.note} — home is {place.home}.")
             typer.echo("pass --ignore-location to tailor it anyway.")
             raise typer.Exit(code=2)
+        left = _days_left(job)
+        if left is not None and left < 0 and not ignore_deadline:
+            typer.echo(f"refusing: the application deadline was {abs(left):.0f} day(s) ago.")
+            typer.echo("pass --ignore-deadline to tailor it anyway.")
+            raise typer.Exit(code=2)
         with _spoken_not_dumped():
             result = pipeline.tailor(job, candidate, store=store)
-        artifacts = render.write(result, candidate, out)
+        artifacts = render.write(result, candidate, out, styles)
         bullets = result.bullets.report
         typer.echo(f"fit {result.fit.total:.1f}/100 ({result.fit.band})")
         typer.echo(f"location: {result.fit.location.note}")
+        if left is not None:
+            typer.echo(f"deadline: {job.deadline:%Y-%m-%d}, {left:.0f} day(s) left")
         typer.echo(f"bullets shipped {len(bullets.shipped)}/{bullets.total}")
         for verdict in bullets.rejected:
             typer.echo(f"  dropped: {verdict.failures[0]}")
@@ -218,6 +271,8 @@ def tailor(
         typer.echo(f"wrote {artifacts.cv_path}")
         typer.echo(f"wrote {artifacts.letter_path}")
         typer.echo(f"wrote {artifacts.audit_path}")
+        for path in artifacts.extra_paths:
+            typer.echo(f"wrote {path}")
     finally:
         store.close()
 
@@ -265,3 +320,259 @@ def record_fixtures(
         store.close()
         set_gateway(None)
         live_mode_enabled.cache_clear()
+
+
+@app.command()
+def ats(
+    uid: Annotated[
+        str, typer.Argument(help="Posting to score the CV against, as printed by `jobs`.")
+    ] = "",
+    *,
+    cv: Annotated[
+        Path | None,
+        typer.Option("--cv", help="Your CV as .txt/.md/.html. Defaults to your fact base."),
+    ] = None,
+    jd: Annotated[
+        Path | None,
+        typer.Option("--jd", help="A job description in a file, instead of a uid."),
+    ] = None,
+    db: DbOption = None,
+    profile: ProfileOption = None,
+    write_cv: Annotated[
+        bool, typer.Option("--write-cv", help="Write the plain-text CV this score is based on.")
+    ] = False,
+) -> None:
+    """Will a machine be able to read this CV? Computed in code: no model, no network.
+
+    The keyword half of the answer is split by what your fact base actually contains.
+    A term you can prove goes under "you may add"; a term you cannot goes under "not in
+    your fact base — do not add". This tool will not hand you a lie and call it optimisation.
+    """
+    candidate = _profile(profile)
+    job_text = ""
+    label = "the CV alone (no posting given)"
+    if uid:
+        store = _store(db)
+        try:
+            job = store.get(uid)
+            if job is None:
+                raise typer.BadParameter(f"no job with uid {uid!r}")
+            job_text = f"{job.title}\n{job.description}"
+            label = f"{job.company} — {job.title}"
+        finally:
+            store.close()
+    elif jd:
+        job_text = jd.read_text(encoding="utf-8", errors="replace")
+        label = jd.name
+
+    text = read_cv(cv) if cv else templates.cv_txt(candidate, None)
+    report = score_cv(text, candidate, job_text)
+
+    typer.echo(f"ATS readiness {report.total}/100 — {report.band}  ({report.words} words)")
+    typer.echo(f"scored against: {label}")
+    for check in report.checks:
+        if check.possible <= 0:
+            typer.echo(f" {check.id:17}    —   {check.why}")
+            continue
+        typer.echo(
+            f" {check.id:17} {check.points:5.1f}/{check.possible:4.1f}  {check.why}"
+        )
+        if check.fix:
+            typer.echo(f"    → {check.fix}")
+    if report.matched_terms:
+        typer.echo("posting terms your CV already states: " + ", ".join(report.matched_terms))
+    if report.addable_terms:
+        typer.echo("YOU MAY ADD (they are in your fact base): " + ", ".join(report.addable_terms))
+    if report.not_in_fact_base:
+        typer.echo(
+            "NOT IN YOUR FACT BASE — DO NOT ADD: " + ", ".join(report.not_in_fact_base)
+        )
+        typer.echo("  add the experience first, then this line: `careerpilot start-here` helps.")
+    if write_cv:
+        written = render.write_cv(candidate, _cv_dir(), tailored=None)
+        for path in written:
+            typer.echo(f"wrote {path}")
+
+
+def _cv_dir() -> Path:
+    return DATA_DIR / "out" / "cv"
+
+
+@app.command()
+def rank(
+    *,
+    db: DbOption = None,
+    profile: ProfileOption = None,
+    limit: Annotated[int, typer.Option("--limit")] = 10,
+    where: Annotated[str, typer.Option("--where", help="'bd', 'open' or 'all'.")] = "open",
+    source: Annotated[str | None, typer.Option("--source", help="Restrict to one feed.")] = None,
+    query: Annotated[str, typer.Argument(help="FTS keyword filter.")] = "",
+    max_new: Annotated[
+        int,
+        typer.Option("--max-new", help="Fresh model calls this run; the free tier throttles."),
+    ] = 15,
+    home: Annotated[str | None, typer.Option("--home")] = None,
+) -> None:
+    """Which postings are worth your time, cheapest first.
+
+    A posting already in the `scores` table is read back rather than re-scored, so the
+    second run of this command costs nothing. `--max-new` exists because Groq's free tier
+    limits tokens per minute: an uncapped batch is how a live run dies halfway through.
+    """
+    _check_where(where)
+    candidate = _profile(profile)
+    reference = home or home_country(candidate)
+    store = _store(db)
+    fresh = reused = skipped = 0
+    try:
+        rows = store.search(query, limit=_SCAN) if query else store.all(limit=_SCAN)
+        ranked: list[tuple[Place, JobPosting, float, str]] = []
+        for job in rows:
+            if source and job.source != source:
+                continue
+            place = _place(job, reference, where)
+            if place is None:
+                continue
+            saved = store.saved_score(job.uid)
+            if saved is not None:
+                reused += 1
+                ranked.append((place, job, saved.total, saved.band))
+                continue
+            if fresh >= max_new:
+                skipped += 1
+                continue
+            fresh += 1
+            with _spoken_not_dumped():
+                fit = pipeline.score(job, candidate, store=store).fit
+            ranked.append((place, job, fit.total, fit.band))
+    finally:
+        store.close()
+
+    ranked.sort(key=lambda item: (item[0].rank, -item[2], _deadline_key(item[1])))
+    typer.echo(
+        f"# workable from {reference} — {fresh} fresh score(s), {reused} reused, "
+        f"{skipped} over the --max-new budget"
+    )
+    for place, job, total, band in ranked[:limit]:
+        left = _days_left(job)
+        closing = f"{left:.0f}d left" if left is not None else "no deadline"
+        typer.echo(
+            f"{job.uid}\t{total:5.1f} {band:<8}\t[{place.mode}] {closing}\t"
+            f"{job.company} — {job.title}"
+        )
+
+
+def _deadline_key(job: JobPosting) -> float:
+    """Nearest deadline first; a posting that never states one goes last."""
+    return job.deadline.timestamp() if job.deadline else float("inf")
+
+
+@app.command()
+def closing(
+    *,
+    db: DbOption = None,
+    profile: ProfileOption = None,
+    days: Annotated[int, typer.Option("--days", help="Window ahead.")] = 21,
+    where: Annotated[str, typer.Option("--where", help="'bd', 'open' or 'all'.")] = "open",
+    home: Annotated[str | None, typer.Option("--home")] = None,
+) -> None:
+    """Deadlines, nearest first, expired ones dropped.
+
+    Only the Bangladeshi boards publish a deadline, which makes this command worth more
+    here than anywhere else: on bdjobs a posting is dead the morning after its date, and
+    nothing in the feed tells you so otherwise.
+    """
+    _check_where(where)
+    reference = home or home_country(_profile(profile))
+    now = datetime.now(UTC)
+    store = _store(db)
+    try:
+        rows = store.all(limit=_SCAN)
+    finally:
+        store.close()
+
+    open_now = [
+        (left, job, place)
+        for job in rows
+        if (place := _place(job, reference, where)) is not None
+        and (left := _days_left(job, now)) is not None
+        and 0 <= left <= days
+    ]
+    open_now.sort(key=lambda item: item[0])
+    expired = sum(1 for job in rows if (_days_left(job, now) or 1) < 0)
+    typer.echo(
+        f"# {len(open_now)} closing within {days} day(s); {expired} already expired and dropped"
+    )
+    for left, job, place in open_now:
+        typer.echo(
+            f"{job.deadline:%Y-%m-%d}\t{left:4.0f}d\t{job.uid}\t[{place.mode}]\t"
+            f"{job.company} — {job.title}"
+        )
+
+
+@app.command(name="start-here")
+def start_here(
+    *,
+    out: Annotated[
+        Path, typer.Option("--out", help="Where to write the fact base.")
+    ] = REPO_ROOT / "data" / "profile.yaml",
+    force: Annotated[bool, typer.Option("--force", help="Overwrite an existing file.")] = False,
+    show: Annotated[bool, typer.Option("--print", help="Print it instead of writing it.")] = False,
+) -> None:
+    """Turn a first job search into a fact base, by asking.
+
+    Nothing here reads as generated text: every answer is yours, and the ids are made
+    for you because the file format requires them. Validate-first, so a half-finished
+    answer never becomes a broken profile on disk.
+    """
+    typer.echo("CareerPilot keeps one file of facts and prints CVs from it. Let's make yours.")
+    typer.echo(questions.ENTRY_FORMAT)
+    profile, dropped = questions.collect(_ask)
+    for line in dropped:
+        typer.echo(f"  skipped (too short to be a fact): {line!r}")
+    text = questions.to_yaml(profile)
+    if show:
+        typer.echo(text)
+        return
+    if out.exists() and not force:
+        typer.echo(f"{out} already exists. Pass --force to overwrite, or --print to see this.")
+        raise typer.Exit(code=2)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(text, encoding="utf-8")
+    typer.echo(f"wrote {len(profile.atoms)} fact(s) to {out}")
+    typer.echo("it is gitignored — this file holds your phone number, keep it that way")
+    typer.echo("next: careerpilot ats          then   careerpilot collect")
+
+
+def _ask(question: questions.Question) -> list[str]:
+    """One prompt, with the hint printed above it rather than hidden in a `--help`.
+
+    Ctrl+D ends the answer instead of aborting the run. A piped answer file has no
+    trailing blank line, and losing every answer to one missing Enter is not a
+    reasonable way to fail.
+    """
+    typer.echo(f"\n{question.prompt}")
+    if question.hint:
+        typer.echo(f"  {question.hint}")
+    if question.answer != "lines":
+        return [_answer("  answer")]
+    typer.echo("  One per line; press Enter on an empty line when you are done.")
+    lines: list[str] = []
+    while True:
+        line = _answer("  >")
+        if not line.strip():
+            return lines
+        lines.append(line)
+
+
+def _answer(text: str) -> str:
+    """`input()` rather than `typer.prompt`, because Ctrl+D must end the answer.
+
+    Under click a closed stdin raises `Abort`, which would throw away forty answers the
+    user already gave. Here it is just the empty line that finishes the block.
+    """
+    typer.echo(text, nl=False)
+    try:
+        return input()
+    except EOFError:
+        return ""

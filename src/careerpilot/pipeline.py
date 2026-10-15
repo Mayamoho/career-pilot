@@ -13,7 +13,8 @@ from pydantic import BaseModel, Field
 from careerpilot.domain.job import JobPosting
 from careerpilot.ground.gate import GateReport
 from careerpilot.ingest.base import new_client
-from careerpilot.ingest.boards import ADAPTERS, BOARDS, TITLE_EXCLUDE, TITLE_INCLUDE, Board
+from careerpilot.ingest.boards import ADAPTERS, BOARDS, Board
+from careerpilot.ingest.filter import wanted_title
 from careerpilot.ingest.store import JobStore
 from careerpilot.match.extract import RequirementSet, extract_requirements
 from careerpilot.match.score import FitScore, score_job
@@ -29,14 +30,6 @@ class CollectReport(BaseModel):
     kept: int = 0
     boards_ok: int = 0
     boards_dead: list[str] = Field(default_factory=list)
-
-
-def wanted_title(title: str) -> bool:
-    """Role filter in code, on the title, before anything costs a model call."""
-    lowered = title.lower()
-    if any(term in lowered for term in TITLE_EXCLUDE):
-        return False
-    return any(term in lowered for term in TITLE_INCLUDE)
 
 
 def collect(

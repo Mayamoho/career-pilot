@@ -1,10 +1,16 @@
 """Curated board tokens. This file is the actual moat.
 
-Every public ATS feed is per-company and there is no directory of tokens, so
-breadth comes from maintaining this list, not from writing fetchers. Tokens marked
+The three global ATS providers are per-company and there is no directory of tokens, so
+breadth there comes from maintaining this list, not from writing fetchers. Tokens marked
 verified were confirmed live against the provider API — the original set on 2026-10-13,
 Supabase and GitLab on 2026-10-15. The rest are candidates: the collector records which
 ones 404 so the list self-corrects over time.
+
+The two Bangladeshi entries and Jobicy break that shape and are better for it: they are
+aggregated feeds, one request each covering thousands of employers, so their tokens are
+a page number or a search term rather than a company. That is also why bdjobs is worth
+the risk of depending on an endpoint it documents nowhere — the local market does not
+publish itself on Greenhouse, and every Bangladeshi company token tried there 404'd.
 """
 
 from __future__ import annotations
@@ -13,8 +19,10 @@ from dataclasses import dataclass
 
 from careerpilot.ingest.adapters import (
     AshbyAdapter,
+    BdJobsAdapter,
     BdTechJobsAdapter,
     GreenhouseAdapter,
+    JobicyAdapter,
     LeverAdapter,
 )
 from careerpilot.ingest.base import SourceAdapter
@@ -87,31 +95,33 @@ BD: tuple[Board, ...] = (
     Board("bdtechjobs", "2", "Bangladesh tech boards", True),
 )
 
-BOARDS: tuple[Board, ...] = (*ASHBY, *GREENHOUSE, *LEVER, *BD)
+# bdjobs is the market: tens of thousands of active postings across every discipline in
+# Bangladesh, with a deadline and a BDT salary on each row — facts no other source in
+# this file publishes. Its gateway takes a page number or a `keyword:<term>` token,
+# because the endpoint honours `keyword` but silently ignores `category` and `location`,
+# so narrowing by stack is the one server-side filter worth using.
+BDJOBS: tuple[Board, ...] = (
+    Board("bdjobs", "1", "bdjobs.com", True),
+    Board("bdjobs", "2", "bdjobs.com", True),
+    *(Board("bdjobs", f"keyword:{term}", "bdjobs.com", True)
+      for term in ("python", "laravel", "django", "react", "node", "java", "qa")),
+)
+
+# Jobicy labels the reachable region on every row and every job is remote, so
+# `anywhere` is the only slice that is honestly open from Dhaka. `apac` is kept because
+# it is the next widest set that includes Bangladesh.
+JOBICY: tuple[Board, ...] = (
+    Board("jobicy", "anywhere", "Jobicy", True),
+    Board("jobicy", "apac", "Jobicy", True),
+)
+
+BOARDS: tuple[Board, ...] = (*ASHBY, *GREENHOUSE, *LEVER, *BD, *BDJOBS, *JOBICY)
 
 ADAPTERS: dict[str, type[SourceAdapter]] = {
     "greenhouse": GreenhouseAdapter,
     "ashby": AshbyAdapter,
     "lever": LeverAdapter,
     "bdtechjobs": BdTechJobsAdapter,
+    "bdjobs": BdJobsAdapter,
+    "jobicy": JobicyAdapter,
 }
-
-# Roles we actually want. Applied in code, after fetching, on the title.
-#
-# The second half of this list was written from evidence rather than taste: the first
-# collect run kept 13 of bdtechjobs' 55 postings and dropped 42, and the ones it threw
-# away were real engineering roles. Bangladeshi boards title those jobs "Developer" and
-# "DevOps Engineer", not "Software Engineer", so a list written from how US boards name
-# things silently filters out the entire local market.
-TITLE_INCLUDE = (
-    "ai engineer", "machine learning", "ml engineer", "backend", "software engineer",
-    "platform engineer", "full stack", "fullstack", "applied ai", "llm", "agent",
-    "data engineer", "security engineer", "sre", "infrastructure",
-    "developer", "devops", "cloud", "secops", "cybersecurity", "site reliability",
-    "ai systems", "information security",
-)
-TITLE_EXCLUDE = (
-    "intern", "co-op", "principal", "staff ", "director", "vp ", "head of",
-    "manager", "lead ", "senior staff", "distinguished", "circuit", "sales",
-    "marketing", "designer", "recruiter", "legal", "finance", "content",
-)

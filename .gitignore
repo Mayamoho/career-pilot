@@ -16,3 +16,9 @@ dist/
 data/profile.yaml
 *.pdf
 /output/
+
+# Cassettes are recordings of real provider answers, and every prompt contains the
+# verbatim text of the profile it was generated from. They are a local convenience for
+# replaying a specific run; the suite never reads them, because tests inject a scripted
+# FakeLLM instead. `record-fixtures` regenerates them on purpose.
+/tests/fixtures/

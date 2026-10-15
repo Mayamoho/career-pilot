@@ -100,6 +100,23 @@ RATE_LIMIT_WAIT_S = 45.0
 # Anything below this is dropped rather than softened.
 GROUNDING_MIN_CONFIDENCE = 0.75
 
+# bdjobs has no documented public API: its own Angular frontend calls these two keyless
+# JSON endpoints, and `robots.txt` on the gateway disallows nothing. That makes it fair
+# game for a job seeker but not for a crawler, so the budget is a hard limit in code
+# rather than a note in a docstring — measured 2026-10-15, one list page is 50 rows, and
+# the detail endpoint is one request per job.
+BDJOBS_DETAIL_LIMIT = 12
+BDJOBS_DETAIL_SLEEP_S = 0.6
+
+# ATS readiness. A one-page CV that is 350-800 words is the range the parsers and the
+# human reader both tolerate; below it there is nothing to score, above it the second
+# page gets skipped. The bands are deliberately not the fit bands: 60/100 on readiness
+# means the machine will lose your CV, which is a different and more urgent message.
+ATS_WORDS_MIN = 350
+ATS_WORDS_MAX = 800
+ATS_READY_MIN = 75.0
+ATS_PARTIAL_MIN = 50.0
+
 
 def require_secret(name: str) -> str:
     load_env_file()

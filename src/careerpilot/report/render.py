@@ -13,17 +13,22 @@ import re
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from careerpilot.config import DATA_DIR
 from careerpilot.pipeline import Tailored
 from careerpilot.profile.model import Atom, Profile
+from careerpilot.report import templates
 
 _UNSAFE = re.compile(r"[^a-zA-Z0-9._-]+")
+# `credential` was missing from this list, so a Coursera or NPTEL certificate — the kind
+# of line a Bangladeshi student legitimately has — was silently dropped from every CV
+# while still sitting in the fact base. A missing section is worse than a wrong one.
 _SECTION_ORDER = [
     ("Tailored highlights", None),
     ("Experience", ("role",)),
     ("Projects", ("project",)),
+    ("Certifications", ("credential",)),
     ("Recognition", ("award",)),
     ("Education", ("education",)),
     ("Skills", ("skill",)),
@@ -35,13 +40,18 @@ class Artifacts(BaseModel):
     cv_path: Path
     letter_path: Path
     audit_path: Path
+    extra_paths: list[Path] = Field(default_factory=list)
 
 
 def render_cv(profile: Profile, tailored: Tailored) -> str:
-    lines = [f"# {profile.name}", "", f"**{profile.headline}**", ""]
+    # The headline is a section, not a decoration under the name: `careerpilot ats` looks
+    # for a heading a parser can key on, and this file is one of its three inputs.
+    lines = [f"# {profile.name}", ""]
     contact = _contact_line(profile)
     if contact:
         lines += [contact, ""]
+    if profile.headline:
+        lines += ["## Summary", "", profile.headline, ""]
 
     shipped = tailored.shipped_bullets
     lines += ["## Tailored highlights", ""]
@@ -63,16 +73,23 @@ def render_cv(profile: Profile, tailored: Tailored) -> str:
 
 
 def render_letter(profile: Profile, tailored: Tailored) -> str:
+    return "\n\n".join(letter_parts(profile, tailored)) + "\n"
+
+
+def letter_parts(profile: Profile, tailored: Tailored) -> list[str]:
+    """The letter's paragraphs, so the markdown and the HTML cannot drift apart."""
     job = tailored.scored.job
-    salutation = f"Dear hiring team at {job.company},"
     paragraphs = tailored.letter or [
         (
             f"I am applying for {job.title}. My recorded experience does not support a "
             "stronger statement for this role, so I would rather say that than guess."
         )
     ]
-    closing = f"Sincerely,\n{profile.name}"
-    return "\n\n".join([salutation, *paragraphs, closing]) + "\n"
+    return [
+        f"Dear hiring team at {job.company},",
+        *paragraphs,
+        f"Sincerely,\n{profile.name}",
+    ]
 
 
 def audit(tailored: Tailored) -> dict[str, Any]:
@@ -131,7 +148,10 @@ def audit(tailored: Tailored) -> dict[str, Any]:
 
 
 def write(
-    tailored: Tailored, profile: Profile, out_dir: Path | None = None
+    tailored: Tailored,
+    profile: Profile,
+    out_dir: Path | None = None,
+    styles: tuple[str, ...] = templates.STYLES,
 ) -> Artifacts:
     root = out_dir or (DATA_DIR / "out" / _safe(tailored.scored.job.uid))
     root.mkdir(parents=True, exist_ok=True)
@@ -141,7 +161,44 @@ def write(
     cv_path.write_text(render_cv(profile, tailored), encoding="utf-8")
     letter_path.write_text(render_letter(profile, tailored), encoding="utf-8")
     audit_path.write_text(json.dumps(audit(tailored), indent=2, default=str), encoding="utf-8")
-    return Artifacts(cv_path=cv_path, letter_path=letter_path, audit_path=audit_path)
+    return Artifacts(
+        cv_path=cv_path,
+        letter_path=letter_path,
+        audit_path=audit_path,
+        extra_paths=write_cv(profile, root, tailored, styles),
+    )
+
+
+def write_cv(
+    profile: Profile,
+    out_dir: Path,
+    tailored: Tailored | None = None,
+    styles: tuple[str, ...] = templates.STYLES,
+) -> list[Path]:
+    """Every CV form this tool knows: one per print style, plus the plain text.
+
+    `tailored` is optional because the CV a fresher needs before their first `tailor`
+    run is still a CV. The plain-text file is what `ats` scores and what a portal's
+    textarea takes; the HTML files are what becomes a PDF with `Ctrl+P`.
+    """
+    out_dir.mkdir(parents=True, exist_ok=True)
+    written: list[Path] = []
+    for style in styles:
+        path = out_dir / f"cv-{style}.html"
+        path.write_text(templates.cv_html(profile, tailored, style), encoding="utf-8")
+        written.append(path)
+    text = out_dir / "cv.txt"
+    text.write_text(templates.cv_txt(profile, tailored), encoding="utf-8")
+    written.append(text)
+    # The letter is HTML, so `--style md` asks for no letter file at all. Its markdown
+    # twin is written by `write()` either way.
+    if tailored is not None and styles:
+        letter = out_dir / "cover-letter.html"
+        letter.write_text(
+            templates.letter_html(profile, letter_parts(profile, tailored)), encoding="utf-8"
+        )
+        written.append(letter)
+    return written
 
 
 def _safe(value: str) -> str:

@@ -136,6 +136,15 @@ _WORDY = re.compile(r"^[a-z0-9. ]+$")
 # matches inside "status", "focus" and every other suffix. Longer names are unambiguous
 # enough to match as substrings.
 _SHORT_TOKEN = 3
+# Not a place: the absence of a restriction. Jobicy's `geo=anywhere` writes the literal
+# word "Anywhere" as the whole location, and other boards write "Remote, Global". These
+# are the only remote rows genuinely reachable from Dhaka, so reading them as an unnamed
+# city would hide exactly the jobs this build is for.
+_WORLDWIDE = ("anywhere", "worldwide", "world-wide", "global", "everywhere", "any location")
+
+
+def _is_worldwide(text: str) -> bool:
+    return any(_mentions(text, word) for word in _WORLDWIDE)
 
 
 def _mentions(text: str, needle: str) -> bool:
@@ -189,6 +198,8 @@ def _mode_of(text: str, is_remote: bool) -> Mode:
         return "hybrid"
     if _mentions(text, "in-office") or _mentions(text, "onsite") or _mentions(text, "on-site"):
         return "onsite"
+    if is_remote and _is_worldwide(text) and not named_countries(text):
+        return "remote"
     if is_remote:
         return "remote-eligible"
     return "unspecified"
@@ -259,7 +270,11 @@ def place_of(job: JobPosting, *, home: str = DEFAULT_HOME) -> Place:
             )
         else:
             workable = True
-            note = "remote, no country named — check the posting"
+            note = (
+                "remote, the posting itself says it is open worldwide"
+                if _is_worldwide(text)
+                else "remote, no country named — check the posting"
+            )
     else:
         # Nothing in the row claims remote. Say what is missing rather than what is
         # present: "London" is a named location, it just is not a reachable one.

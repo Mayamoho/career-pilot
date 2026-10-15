@@ -9,7 +9,9 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, computed_field
 
-Source = Literal["greenhouse", "ashby", "lever", "bdtechjobs", "bdjobs", "remotive", "manual"]
+Source = Literal[
+    "greenhouse", "ashby", "lever", "bdtechjobs", "bdjobs", "jobicy", "remotive", "manual"
+]
 
 _TAG = re.compile(r"<[^>]+>")
 _BLOCK = re.compile(r"(?i)</(p|div|li|br|h[1-6]|tr)[^>]*>")
@@ -57,6 +59,11 @@ class JobPosting(BaseModel):
     updated_at: datetime | None = None
     collected_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     compensation: str | None = None
+    # The last day the employer will read the application, when the board publishes one.
+    # Bangladeshi boards do and Western ATSes almost never do, which is why nothing
+    # downstream could act on it before: there was nothing to act on. It is carried in the
+    # `payload` column rather than as a new SQLite column, so no migration is needed.
+    deadline: datetime | None = None
 
     @computed_field  # type: ignore[prop-decorator]
     @property

@@ -189,6 +189,34 @@ def test_a_place_that_is_simply_not_remote_says_the_place() -> None:
     assert place.note == "not stated as remote, in United Kingdom"
 
 
+def test_an_anywhere_location_is_a_restriction_lifted_not_a_place_unknown() -> None:
+    """Jobicy writes the literal word "Anywhere" as the whole location.
+
+    Read as an unnamed city it becomes unreachable from Dhaka, which hides the only
+    remote jobs a Bangladeshi candidate can actually take. Live rows forced this rule.
+    """
+    place = place_of(_job("Anywhere", remote=True), home="Bangladesh")
+
+    assert place.mode == "remote"
+    assert place.workable is True
+    assert "worldwide" in place.note
+
+
+def test_a_worldwide_marker_next_to_a_named_country_stays_a_named_country_job() -> None:
+    """"Global" must not switch an Australia-scoped role open to a Dhaka candidate."""
+    place = place_of(_job("Australia", remote=True), home="Bangladesh")
+
+    assert place.workable is False
+    assert place.countries == ("Australia",)
+
+
+def test_a_global_region_with_no_country_is_open_worldwide() -> None:
+    place = place_of(_job("Remote, Global"), home="Bangladesh")
+
+    assert place.mode == "remote"
+    assert place.workable is True
+
+
 def _profile(location: str) -> Profile:
     return Profile(
         name="Test",
