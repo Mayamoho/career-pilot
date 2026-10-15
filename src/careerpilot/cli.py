@@ -38,7 +38,38 @@ from careerpilot.profile import questions
 from careerpilot.profile.model import Profile, load_profile
 from careerpilot.report import render, templates
 
-app = typer.Typer(help="CareerPilot — grounded job fit and CV tailoring.", no_args_is_help=True)
+app = typer.Typer(no_args_is_help=True)
+
+
+@app.callback()
+def _guide() -> None:
+    """Grounded job fit and CV tailoring for someone starting out in Bangladesh.
+
+    \b
+    WHICH COMMANDS NEED A JOB UID, AND WHERE IT COMES FROM
+      A uid is `source:id` exactly as printed: bdjobs:1545472, bdtechjobs:52,
+      greenhouse:openai:1234, jobicy:155389. Get one from `careerpilot jobs` (or
+      `careerpilot rank`, `careerpilot closing`). Commands that take one:
+        jobs [QUERY]        optional keyword filter, no uid
+        score-job UID       one posting  -> the fit score and its reasons
+        tailor UID          one posting  -> CV, cover letter, audit trail
+        ats [UID]           optional uid; with none it scores the CV alone
+      Everything else takes no uid: collect, closing, rank, start-here, traces,
+      record-fixtures JOBS...
+
+    \b
+    WHAT EACH RUN COSTS
+      Free, no key, no model:  collect, jobs, ats, closing, start-here, traces
+      One model call per new posting:  rank (capped by --max-new, default 5)
+      Several model calls:  score-job, tailor, record-fixtures
+      A posting scored once is reused, so `rank` twice costs one call.
+
+    \b
+    FIRST RUN, IN ORDER
+      careerpilot start-here     then     careerpilot collect
+      careerpilot ats            then     careerpilot jobs --where bd python
+      careerpilot rank --limit 10        then     careerpilot tailor <uid>
+    """
 
 
 def _recency(job: JobPosting) -> float:
@@ -192,7 +223,9 @@ def jobs(
 
 @app.command()
 def score_job(
-    uid: Annotated[str, typer.Argument(help="Job uid, as printed by `jobs`.")],
+    uid: Annotated[
+        str, typer.Argument(help="Job uid as printed by `jobs`, e.g. bdjobs:1545472.")
+    ],
     *,
     db: DbOption = None,
     profile: ProfileOption = None,
@@ -203,7 +236,9 @@ def score_job(
     try:
         job = store.get(uid)
         if job is None:
-            raise typer.BadParameter(f"no job with uid {uid!r}")
+            raise typer.BadParameter(
+                f"no job with uid {uid!r} — list what is stored with `careerpilot jobs`",
+            )
         with _spoken_not_dumped():
             scored = pipeline.score(job, candidate, store=store, progress=_working)
         loc = scored.fit.location
@@ -224,7 +259,10 @@ def score_job(
 
 @app.command()
 def tailor(
-    uid: Annotated[str, typer.Argument(help="Job uid, as printed by `jobs`.")],
+    uid: Annotated[
+        str,
+        typer.Argument(help="Job uid as printed by `jobs`/`rank`/`closing`, e.g. bdjobs:1545472."),
+    ],
     *,
     db: DbOption = None,
     profile: ProfileOption = None,
@@ -256,7 +294,9 @@ def tailor(
     try:
         job = store.get(uid)
         if job is None:
-            raise typer.BadParameter(f"no job with uid {uid!r}")
+            raise typer.BadParameter(
+                f"no job with uid {uid!r} — list what is stored with `careerpilot jobs`",
+            )
         place = place_of(job, home=home_country(candidate))
         if not place.workable and not ignore_location:
             typer.echo(f"refusing: {place.note} — home is {place.home}.")
@@ -298,7 +338,10 @@ def traces() -> None:
 
 @app.command(name="record-fixtures")
 def record_fixtures(
-    uids: Annotated[list[str], typer.Argument(help="Job uids to record prompts for.")],
+    uids: Annotated[
+        list[str],
+        typer.Argument(help="Job uids to record prompts for, as printed by `jobs`."),
+    ],
     *,
     db: DbOption = None,
     profile: ProfileOption = None,
@@ -368,7 +411,9 @@ def ats(
         try:
             job = store.get(uid)
             if job is None:
-                raise typer.BadParameter(f"no job with uid {uid!r}")
+                raise typer.BadParameter(
+                    f"no job with uid {uid!r} — list what is stored with `careerpilot jobs`",
+                )
             job_text = f"{job.title}\n{job.description}"
             label = f"{job.company} — {job.title}"
         finally:

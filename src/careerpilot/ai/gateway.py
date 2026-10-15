@@ -24,9 +24,11 @@ from pydantic import ValidationError
 from careerpilot.ai.errors import (
     ContractError,
     ExhaustedRetriesError,
+    NoCredentialError,
     NoRecordingError,
     TransportError,
 )
+from careerpilot.ai.providers import CREDENTIAL_ENV, credential_present
 from careerpilot.ai.schemas import OutputT, StructuredOutput
 from careerpilot.ai.trace import CallRecord, Timer, TraceSink, default_sink
 from careerpilot.config import (
@@ -195,12 +197,16 @@ class AIGateway:
     ) -> OutputT:
         causes: list[str] = []
         total_attempts = 0
+        tried = 0
 
         for spec in MODEL_CHAIN:
             provider = self._providers.get(spec.provider)
             if provider is None:
                 causes.append(f"{spec.provider}: no adapter")
                 continue
+            if not credential_present(spec.provider):
+                continue  # no key for this hop: skip it, do not spend it as a failure
+            tried += 1
             messages: list[dict[str, str]] = [{"role": "user", "content": user}]
 
             for attempt in range(MAX_REPAIR_ATTEMPTS + 1):
@@ -278,6 +284,9 @@ class AIGateway:
                     self._cassette.put(key, text=reply.text, model=spec.model, task=task)
                 return parsed
 
+        if tried == 0:
+            configured = ", ".join(sorted(set(CREDENTIAL_ENV.values())))
+            raise NoCredentialError(configured)
         raise ExhaustedRetriesError(task, total_attempts, causes)
 
     @staticmethod

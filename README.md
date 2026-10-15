@@ -180,16 +180,35 @@ The cross-platform way — one file, no shell syntax to remember:
 cp .env.example .env          # Windows: copy .env.example .env
 ```
 
-then edit `.env`:
+then edit `.env`. **One key is enough** — the chain tries each provider in order and skips
+the ones you did not fill in, so you can start with Groq alone and add more later:
 
 ```dotenv
 GROQ_API_KEY=gsk_...
 CAREERPILOT_LIVE=1
+# optional, and each one is a fresh daily budget rather than a backup:
+GEMINI_API_KEY=
+CEREBRAS_API_KEY=
+OPENROUTER_API_KEY=
 ```
 
-`console.groq.com` has a free tier; set a spend limit once you are in. `GEMINI_API_KEY`
-works instead — Groq is tried first, Gemini is the fallback. A key you `export` in the
-shell outranks the file.
+Every hop is a free tier that needs no credit card, and the model is chosen for each so it
+declares structured JSON output (a model that silently ignores that returns prose, which the
+validator rejects). Where each key comes from, and what it is worth adding:
+
+| Order | Provider | Key from | Why it is in the chain |
+|---|---|---|---|
+| 1 | Groq | `console.groq.com` | fastest; **but the free tier caps tokens per day** (~200k on gpt-oss-120b), so this is the hop that runs out |
+| 2 | Gemini | `aistudio.google.com` | the single most useful second key: a different daily window, so `tailor` works after Groq says no |
+| 3 | Cerebras | `cerebras.ai` | a large free daily token budget; OpenAI-compatible endpoint |
+| 4 | OpenRouter | `openrouter.ai` | one key, many `:free` models; pinned to one that declares structured output |
+
+Hops 3 and 4 were wired and tested against recorded responses, and their model ids read off
+each provider's own public model list, but neither has been exercised from a real key yet —
+the machine this was built on only has a Groq key. If one of those ids is stale, the call
+fails as a 4xx and the chain moves on; it cannot corrupt a CV.
+
+A key you `export` in the shell outranks the file.
 
 Prefer environment variables? They work too:
 
@@ -203,6 +222,29 @@ Without `CAREERPILOT_LIVE=1` the tool only ever replays recorded model answers �
 answers are recorded yet, so a model-dependent command stops with a one-line explanation
 instead of inventing text. That refusal is the design working: it would rather say nothing
 than make something up.
+
+## Every command, and what it needs
+
+`careerpilot --help` prints this same map; `careerpilot <command> --help` prints the flags.
+**A uid is the entire first column of `jobs`, colon included** — `bdjobs:1545472`, not `1545472`.
+Four commands take one; the rest take no uid at all.
+
+| Command | Takes | Cost | What it does |
+|---|---|---|---|
+| `start-here` | — | free | asks 14 questions, writes `data/profile.yaml` (the fact base) |
+| `collect` | — | free | fetches every curated board, stores what passes the role filter |
+| `jobs [QUERY]` | optional keyword | free | lists stored postings with the location read honestly (`--where bd/open/all`, `--source`, `--limit`) |
+| `closing` | — | free | postings ordered by days left, expired ones dropped (`--days 21`) |
+| `ats [UID]` | optional uid, `--cv FILE`, `--jd FILE` | free | ATS-readiness score of the CV, in code — see *Can a machine read this* |
+| `rank [QUERY]` | optional keyword | 1 call per *new* job | which postings are worth the day's budget (`--limit`, `--max-new 5`, `--where`) |
+| `score-job UID` | **uid** | 1 call | the fit score and one line per requirement, matched or not |
+| `tailor UID` | **uid** | several calls | CV + cover letter + audit trail in every print form (`--style ats/oxford/both/md`, `--out DIR`) |
+| `traces` | — | free | what the model calls cost, failed, and whether the fallback fired |
+| `record-fixtures UID…` | **uids** | several calls | records model answers as cassettes so CI can replay them for free |
+
+Progress (`… fetching`, `… scoring 2/5`, `… drafting bullets`) is written to **stderr**, so
+`careerpilot rank > shortlist.txt` gives a clean file while the terminal still shows the tool
+working. Ctrl+C is safe: every score is committed the moment it lands.
 
 ## Use it, step by step
 
@@ -344,7 +386,7 @@ nothing. `tailor` refuses one for the same reason, before any model call.
 
 ```bash
 careerpilot ats
-careerpilot ats bdjobs:1542177        # the same score against one real posting
+careerpilot ats bdjobs:1545472        # the same score against one real posting
 careerpilot ats --cv my-cv.txt --jd posted-description.txt
 ```
 
@@ -364,20 +406,24 @@ rule you can read rather than an opinion:
 A real run against a live Bd internship posting, on the example fact base:
 
 ```
-ATS readiness 93.9/100 — ready  (983 words)
+ATS readiness 93.9/100 — ready  (978 words)
 scored against: Felna Tech (FelnaTech.com) — Full-Stack Developer Intern
  contact_block      15.0/15.0  all four present
  sections           20.0/20.0  found: Summary, Skills, Experience or Projects, Education
  keyword_coverage   25.0/30.0  10/12 of the posting's terms appear in the CV
+    → nothing you already have is missing — see 'not in your fact base'
  proof_density      15.0/15.0  21/42 bullets contain a number
  filler             10.0/10.0  no filler phrases
- length              3.9/ 5.0  983 words — over one page
+ length              3.9/ 5.0  978 words — over one page
     → cut to the last two years: one page is read, two are skimmed
  parse_traps         5.0/ 5.0  no known parse traps
 posting terms your CV already states: css, database, git, github, javascript, mongodb, Next.js, node, react, rest
 NOT IN YOUR FACT BASE — DO NOT ADD: html, mysql
   add the experience first, then this line: `careerpilot start-here` helps.
 ```
+
+With no posting given, `keyword_coverage` is excluded and the total rescales over the
+remaining 70 points — a CV cannot be "missing keywords" from nothing.
 
 The `proof_density` denominator is the number to argue with, and it is the reason this is a
 rule rather than a vibe: 42 bullet lines, 21 with a figure in them. A date does not qualify —
@@ -566,8 +612,9 @@ careerpilot traces
 Real numbers from building this: a hundred and forty-six calls across every live run cost
 five cents. Two things worth reading in that: `total_failures` is a third of all calls — the
 free tier throws schema errors, and the retry path is what you are paying five cents for
-instead of a broken CV — and `fallback_invocations` is 0, because the Gemini key was never
-configured, so the fallback has been tested but never exercised for real.
+instead of a broken CV — and `fallback_invocations` is 0, because only one provider key was
+ever configured, so the chain has been tested against recorded responses but never exercised
+across real providers on this machine.
 
 The real ceiling is not money, it is that free tier's **daily token window** (measured
 2026-10-16: `tokens per day (TPD): Limit 200000` on `openai/gpt-oss-120b`). Once it is spent,

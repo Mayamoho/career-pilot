@@ -13,7 +13,12 @@ from pydantic import Field
 
 from careerpilot import config
 from careerpilot.ai.cassette import CassetteStore
-from careerpilot.ai.errors import ContractError, ExhaustedRetriesError, NoRecordingError
+from careerpilot.ai.errors import (
+    ContractError,
+    ExhaustedRetriesError,
+    NoCredentialError,
+    NoRecordingError,
+)
 from careerpilot.ai.gateway import SYSTEM_PREAMBLE, AIGateway
 from careerpilot.ai.providers import PROVIDERS, GeminiProvider, GroqProvider
 from careerpilot.ai.schemas import StructuredOutput
@@ -284,6 +289,46 @@ def test_a_daily_quota_moves_on_instead_of_waiting_through_it(
     assert result.score == 8
     assert groq.call_count == 1, "a daily limit must not be re-asked in place"
     assert gemini.called
+
+
+def test_a_hop_with_no_key_is_skipped_and_never_mentioned(live: AIGateway) -> None:
+    """The chain is four providers deep; most people have one or two keys.
+
+    An unconfigured hop must not appear in the failure list. Listing three
+    "no credential" causes under the one provider that actually refused makes the real
+    answer unreadable, and it would also mean the tool is reporting a state of the
+    user's `.env` as though it were a model's behaviour.
+    """
+    with respx.mock:
+        groq = respx.post(GROQ_URL).mock(return_value=httpx.Response(400, text="bad request"))
+        gemini = respx.post(GEMINI_URL).mock(return_value=httpx.Response(400, text="bad request"))
+
+        with pytest.raises(ExhaustedRetriesError) as excinfo:
+            live.ask(task="answer", system=SYSTEM, user=USER, schema=Answer)
+
+    assert groq.called and gemini.called
+    causes = " ".join(excinfo.value.causes)
+    assert "cerebras" not in causes and "openrouter" not in causes
+    assert len(excinfo.value.causes) == 2
+
+
+def test_no_key_at_all_says_so_instead_of_reporting_zero_attempts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Live mode on with an empty `.env` is a setup state, not a model that refused."""
+    monkeypatch.setenv("CAREERPILOT_LIVE", "1")
+    for name in ("GROQ_API_KEY", "GEMINI_API_KEY", "CEREBRAS_API_KEY", "OPENROUTER_API_KEY"):
+        monkeypatch.setenv(name, "")
+    live_mode_enabled.cache_clear()
+    gateway = AIGateway(
+        providers=PROVIDERS, cassette=CassetteStore(tmp_path / "c"), sink=TraceSink(quiet=True)
+    )
+
+    with pytest.raises(NoCredentialError) as excinfo, respx.mock:
+        gateway.ask(task="answer", system=SYSTEM, user=USER, schema=Answer)
+
+    assert "GROQ_API_KEY" in str(excinfo.value)
+    assert "attempt" not in str(excinfo.value).lower()
 
 
 def test_every_model_failing_raises_exhausted_instead_of_guessing(live: AIGateway) -> None:

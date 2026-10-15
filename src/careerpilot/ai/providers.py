@@ -1,23 +1,35 @@
 """Provider adapters. Raw HTTP on purpose.
 
-Wrapping two vendors behind one `generate()` signature keeps the gateway in control
+Wrapping several vendors behind one `generate()` signature keeps the gateway in control
 of retries and makes the test double a drop-in. Token counts come from the providers'
 own usage fields where present so cost accounting is not a guess.
+
+Every hop here is an OpenAI-compatible `/chat/completions` endpoint except Gemini, which
+is its own shape. They are in the chain because each has a free tier that needs no card,
+and a candidate with no key configured is skipped before the request rather than counted
+as a failure — see `credential_present`.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import re
-from typing import Any, Protocol
+from typing import Any, ClassVar, Protocol
 
 import httpx
 
 from careerpilot.ai.errors import MissingProviderCredential, TransportError
 from careerpilot.ai.schemas import OutputT, StructuredOutput
-from careerpilot.config import ModelSpec, require_secret
+from careerpilot.config import ModelSpec, load_env_file, require_secret
 
-CREDENTIAL_ENV = {"groq": "GROQ_API_KEY", "gemini": "GEMINI_API_KEY"}
+# One env var per provider. Any of them being unset simply removes that hop.
+CREDENTIAL_ENV = {
+    "groq": "GROQ_API_KEY",
+    "gemini": "GEMINI_API_KEY",
+    "openrouter": "OPENROUTER_API_KEY",
+    "cerebras": "CEREBRAS_API_KEY",
+}
 
 HTTP_ERROR_STATUS = 400
 RETRYABLE_STATUSES = frozenset({408, 409, 429})
@@ -58,6 +70,21 @@ class Provider(Protocol):
     ) -> ProviderReply: ...
 
 
+def credential_present(provider: str) -> bool:
+    """Does this operator have a key for that provider? Checked before the request.
+
+    The chain is deliberately longer than the keys most people have. Asking a provider
+    with no credential and recording the refusal as a cause would bury the one failure
+    that matters under three identical ones, so an unconfigured hop is skipped silently
+    and never reaches the network.
+    """
+    name = CREDENTIAL_ENV.get(provider)
+    if name is None:
+        return False
+    load_env_file()
+    return bool(os.environ.get(name, "").strip())
+
+
 class ProviderReply:
     __slots__ = ("completion_tokens", "prompt_tokens", "text")
 
@@ -80,10 +107,17 @@ def _credentials(model: ModelSpec) -> str:
         raise MissingProviderCredential(model.provider, secret) from exc
 
 
-class GroqProvider:
-    """OpenAI-compatible chat completions with JSON-schema response_format."""
+class OpenAICompatibleProvider:
+    """Chat completions against any endpoint that speaks the OpenAI JSON body.
 
-    BASE = "https://api.groq.com/openai/v1/chat/completions"
+    Groq, Cerebras and OpenRouter all expose this exact shape, so one class covers three
+    providers and the only thing that differs is the URL. The JSON-schema `response_format`
+    is what every hop in the chain declares support for — a model that silently ignores it
+    returns prose, which the validator then rejects as a contract failure.
+    """
+
+    def __init__(self, base: str) -> None:
+        self.base = base
 
     def generate(
         self,
@@ -108,8 +142,35 @@ class GroqProvider:
             },
             "messages": [{"role": "system", "content": system}, *messages],
         }
-        response = client.post(self.BASE, json=body, headers={"Authorization": f"Bearer {key}"})
+        response = client.post(self.base, json=body, headers={"Authorization": f"Bearer {key}"})
         return _openai_style_reply(response, model)
+
+
+class GroqProvider(OpenAICompatibleProvider):
+    """OpenAI-compatible chat completions with JSON-schema response_format."""
+
+    BASE: ClassVar[str] = "https://api.groq.com/openai/v1/chat/completions"
+
+    def __init__(self) -> None:
+        super().__init__(self.BASE)
+
+
+class CerebrasProvider(OpenAICompatibleProvider):
+    """Cerebras inference — same OpenAI-shaped body, its own host."""
+
+    BASE: ClassVar[str] = "https://api.cerebras.ai/v1/chat/completions"
+
+    def __init__(self) -> None:
+        super().__init__(self.BASE)
+
+
+class OpenRouterProvider(OpenAICompatibleProvider):
+    """OpenRouter — a router in front of many models, one OpenAI-shaped endpoint."""
+
+    BASE: ClassVar[str] = "https://openrouter.ai/api/v1/chat/completions"
+
+    def __init__(self) -> None:
+        super().__init__(self.BASE)
 
 
 class GeminiProvider:
@@ -200,4 +261,9 @@ def _gemini_schema(node: dict[str, Any]) -> dict[str, Any]:
     return {k: v for k, v in keep.items() if v is not None}
 
 
-PROVIDERS: dict[str, Provider] = {"groq": GroqProvider(), "gemini": GeminiProvider()}
+PROVIDERS: dict[str, Provider] = {
+    "groq": GroqProvider(),
+    "gemini": GeminiProvider(),
+    "cerebras": CerebrasProvider(),
+    "openrouter": OpenRouterProvider(),
+}

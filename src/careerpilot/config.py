@@ -63,20 +63,31 @@ class ModelSpec(BaseModel):
         ) / 1_000_000
 
 
-# Ordered fallback chain. Groq first for latency, Gemini second for quota resilience.
-# Re-pinned 2026-10-15: `groq-llama-3.3-70b-specdec` now answers `model_not_found`, so
-# every live call died at the first hop. gpt-oss-120b is the smallest Groq model left
-# that declares `structured_outputs`, which the strict json_schema body below requires —
-# a model that ignores response_format would silently return prose and fail validation.
-# Prices are the per-token rates Groq's own /models endpoint reports, scaled to 1M.
+# Ordered fallback chain — every hop a free tier that needs no card, so a person with one
+# key works and a person with four keys gets a deeper budget. Groq first for latency; then
+# the rest purely as quota, tried only when their key is configured (see `credential_present`).
+# Re-pinned 2026-10-15: `groq-llama-3.3-70b-specdec` now answers `model_not_found`, so every
+# live call died at the first hop. gpt-oss-120b is the smallest Groq model left that declares
+# `structured_outputs`, which the strict json_schema body requires — a model that ignores
+# response_format would silently return prose and fail validation.
+# Prices are the per-token rates each provider's own endpoint reports, scaled to 1M; the free
+# hops are 0.0 because on their free tiers they genuinely cost nothing.
 PRIMARY = ModelSpec(
     provider="groq", model="openai/gpt-oss-120b", input_per_1m=0.15, output_per_1m=0.60
 )
 FALLBACK = ModelSpec(
     provider="gemini", model="gemini-2.0-flash-001", input_per_1m=0.10, output_per_1m=0.40
 )
+# Cerebras and OpenRouter are added as deeper quota, not as verified-working hops: their
+# model ids were read off each provider's own public model list on 2026-10-16, but neither
+# has been exercised from this machine because no key for them exists yet. A model id that
+# turns out to be wrong fails as a 4xx and the chain moves on — it cannot corrupt a CV.
+QUOTA_TERTIARY = ModelSpec(provider="cerebras", model="gpt-oss-120b", input_per_1m=0.0,
+                          output_per_1m=0.0)
+QUOTA_LAST = ModelSpec(provider="openrouter", model="nvidia/nemotron-3-super-120b-a12b:free",
+                      input_per_1m=0.0, output_per_1m=0.0)
 
-MODEL_CHAIN: tuple[ModelSpec, ...] = (PRIMARY, FALLBACK)
+MODEL_CHAIN: tuple[ModelSpec, ...] = (PRIMARY, FALLBACK, QUOTA_TERTIARY, QUOTA_LAST)
 
 MAX_REPAIR_ATTEMPTS = 2
 REQUEST_TIMEOUT_S = 45.0

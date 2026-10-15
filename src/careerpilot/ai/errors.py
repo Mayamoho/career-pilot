@@ -38,6 +38,22 @@ class MissingProviderCredential(AIError):
         self.secret_name = secret_name
 
 
+class NoCredentialError(AIError):
+    """Live mode is on but not one provider has a key, so there is nothing to call.
+
+    Distinct from ExhaustedRetriesError: that means providers were asked and refused, this
+    means the network was never reached. Reporting "gave up after 0 attempts" would imply
+    the models were the problem, when the fix is one line in `.env`.
+    """
+
+    def __init__(self, secret_names: str) -> None:
+        super().__init__(
+            "live mode is on but no provider has a key, so no model was asked anything. "
+            f"Set at least one of these in .env (copy .env.example): {secret_names}. "
+            "Groq gives the most tokens per day for free; any one of them is enough."
+        )
+
+
 class ContractError(AIError):
     """The model returned something that is not the requested structure."""
 
