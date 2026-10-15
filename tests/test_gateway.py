@@ -11,13 +11,14 @@ import pytest
 import respx
 from pydantic import Field
 
+from careerpilot import config
 from careerpilot.ai.cassette import CassetteStore
 from careerpilot.ai.errors import ContractError, ExhaustedRetriesError
 from careerpilot.ai.gateway import SYSTEM_PREAMBLE, AIGateway
 from careerpilot.ai.providers import PROVIDERS, GeminiProvider, GroqProvider
 from careerpilot.ai.schemas import StructuredOutput
 from careerpilot.ai.trace import TraceSink
-from careerpilot.config import FALLBACK, live_mode_enabled
+from careerpilot.config import FALLBACK, live_mode_enabled, require_secret
 
 
 class Answer(StructuredOutput):
@@ -163,3 +164,50 @@ def test_a_successful_live_call_is_recorded_for_the_next_run(
 
     assert result.score == 6
     assert len(tmp_cassette) == 1
+
+
+def test_a_dotenv_file_in_the_project_directory_supplies_the_credential(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The documented way to set a key on a Windows terminal, where `export` is not a thing."""
+    (tmp_path / ".env").write_text("GROQ_API_KEY=gsk_from_the_file\n", encoding="utf-8")
+    monkeypatch.setattr(config, "REPO_ROOT", tmp_path)
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    config._read_env_file.cache_clear()
+    try:
+        assert require_secret("GROQ_API_KEY") == "gsk_from_the_file"
+    finally:
+        # load_dotenv writes straight into os.environ, which monkeypatch does not undo.
+        config._read_env_file.cache_clear()
+        monkeypatch.delenv("GROQ_API_KEY", raising=False)
+
+
+def test_a_credential_exported_in_the_shell_outranks_the_env_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A forgotten .env must not silently win over the key you just exported."""
+    (tmp_path / ".env").write_text("GROQ_API_KEY=gsk_from_the_file\n", encoding="utf-8")
+    monkeypatch.setattr(config, "REPO_ROOT", tmp_path)
+    monkeypatch.setenv("GROQ_API_KEY", "gsk_from_the_shell")
+    config._read_env_file.cache_clear()
+    try:
+        assert require_secret("GROQ_API_KEY") == "gsk_from_the_shell"
+    finally:
+        config._read_env_file.cache_clear()
+
+
+def test_an_env_file_cannot_switch_the_suite_live(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The README invites users to put `CAREERPILOT_LIVE=1` in `.env`. This suite must
+    stay deaf to it: a developer who follows those instructions would otherwise be
+    billed for a model call by every test, and the results would stop being repeatable.
+    """
+    (tmp_path / ".env").write_text("CAREERPILOT_LIVE=1\n", encoding="utf-8")
+    monkeypatch.setattr(config, "REPO_ROOT", tmp_path)
+    config._read_env_file.cache_clear()
+    try:
+        assert live_mode_enabled() is False
+    finally:
+        config._read_env_file.cache_clear()
+        monkeypatch.delenv("CAREERPILOT_LIVE", raising=False)

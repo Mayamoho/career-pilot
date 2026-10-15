@@ -20,7 +20,11 @@ from support import TaskFake
 @pytest.fixture(autouse=True)
 def _isolated_gateway(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     """Every test starts with no gateway and with live mode forced off."""
-    monkeypatch.delenv("CAREERPILOT_LIVE", raising=False)
+    # Set to empty, not deleted: `load_dotenv(override=False)` leaves any key that is
+    # already present, so an empty value keeps a developer's own `.env` — which the
+    # README invites them to fill with CAREERPILOT_LIVE=1 — from silently switching the
+    # suite onto real models. Deleting it instead would let the file win.
+    monkeypatch.setenv("CAREERPILOT_LIVE", "")
     live_mode_enabled.cache_clear()
     set_gateway(None)
     yield

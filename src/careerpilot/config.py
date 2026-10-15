@@ -10,11 +10,27 @@ import os
 from functools import lru_cache
 from pathlib import Path
 
+from dotenv import load_dotenv
 from pydantic import BaseModel, Field
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DATA_DIR = Path(os.environ.get("CAREERPILOT_DATA_DIR", REPO_ROOT / "var"))
 FIXTURES_DIR = REPO_ROOT / "tests" / "fixtures"
+
+
+@lru_cache
+def _read_env_file() -> bool:
+    """Load `<repo>/.env` once, on first need.
+
+    Lazily rather than at import, so pulling in this module changes nothing in the
+    process — which is what lets the test suite run without a stray file on someone's
+    machine silently supplying real credentials. Read from REPO_ROOT rather than the
+    working directory, so the key is found whichever directory the CLI is invoked from.
+    `override=False`: a key exported in the shell outranks a file that was forgotten.
+    """
+    load_dotenv(REPO_ROOT / ".env", override=False)
+    return True
+
 
 # Two fact bases, deliberately. `profile.example.yaml` is committed and de-identified,
 # so CI and the eval thresholds run everywhere. `profile.yaml` is the real one — same
@@ -67,6 +83,7 @@ GROUNDING_MIN_CONFIDENCE = 0.75
 
 
 def require_secret(name: str) -> str:
+    _read_env_file()
     value = os.environ.get(name, "").strip()
     if not value:
         raise MissingCredentialError(name)
@@ -84,5 +101,11 @@ class MissingCredentialError(RuntimeError):
 
 @lru_cache
 def live_mode_enabled() -> bool:
-    """Real provider calls are opt-in. CI never sets this."""
+    """Real provider calls are opt-in. CI never sets this.
+
+    Read after the env file, so `.env` can carry `CAREERPILOT_LIVE=1` too: one file
+    then holds the whole switch, identically on Linux, macOS and a Windows terminal
+    where `export` does not exist. Cached because it is read on every model call.
+    """
+    _read_env_file()
     return os.environ.get("CAREERPILOT_LIVE", "").strip() == "1"
