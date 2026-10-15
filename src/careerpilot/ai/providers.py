@@ -19,8 +19,22 @@ from careerpilot.config import ModelSpec, require_secret
 CREDENTIAL_ENV = {"groq": "GROQ_API_KEY", "gemini": "GEMINI_API_KEY"}
 
 HTTP_ERROR_STATUS = 400
-HTTP_SERVER_ERROR = 500
 RETRYABLE_STATUSES = frozenset({408, 409, 429})
+
+
+def _http_failure(model: ModelSpec, response: httpx.Response) -> TransportError:
+    """Wrap a status code in the one error type that knows what waiting can fix.
+
+    A 429 is a schedule: the tokens free up in under a minute and the same request will
+    succeed, so it is retryable in place. A 5xx is a verdict about that model, and the
+    fallback chain — not a re-ask — is the answer to it. Conflating the two wastes the
+    chain on a rate limit and re-asks a dead model.
+    """
+    return TransportError(
+        model.provider,
+        f"HTTP {response.status_code}: {response.text[:200]}",
+        retryable=response.status_code in RETRYABLE_STATUSES,
+    )
 
 
 class Provider(Protocol):
@@ -80,7 +94,7 @@ class GroqProvider:
                 "json_schema": {
                     "name": schema.__name__,
                     "strict": True,
-                    "schema": schema.json_schema(),
+                    "schema": schema.provider_schema(),
                 },
             },
             "messages": [{"role": "system", "content": system}, *messages],
@@ -112,15 +126,13 @@ class GeminiProvider:
             "generationConfig": {
                 "temperature": 0,
                 "responseMimeType": "application/json",
-                "responseSchema": _gemini_schema(schema.json_schema()),
+                "responseSchema": _gemini_schema(schema.provider_schema()),
             },
         }
         url = f"{self.BASE}/{model.model}:generateContent"
         response = client.post(url, json=body, params={"key": key})
         if response.status_code >= HTTP_ERROR_STATUS:
-            raise TransportError(
-                model.provider, f"HTTP {response.status_code}: {response.text[:200]}"
-            )
+            raise _http_failure(model, response)
         payload = response.json()
         try:
             text = payload["candidates"][0]["content"]["parts"][0]["text"]
@@ -136,12 +148,7 @@ class GeminiProvider:
 
 def _openai_style_reply(response: httpx.Response, model: ModelSpec) -> ProviderReply:
     if response.status_code >= HTTP_ERROR_STATUS:
-        raise TransportError(
-            model.provider,
-            f"HTTP {response.status_code}: {response.text[:200]}",
-            retryable=response.status_code in RETRYABLE_STATUSES
-            or response.status_code >= HTTP_SERVER_ERROR,
-        )
+        raise _http_failure(model, response)
     try:
         payload = response.json()
         text = payload["choices"][0]["message"]["content"]

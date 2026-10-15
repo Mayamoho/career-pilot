@@ -93,6 +93,9 @@ def live(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> AIGateway:
         providers=PROVIDERS,
         cassette=CassetteStore(tmp_path / "cassettes"),
         sink=TraceSink(quiet=True),
+        # The retry backoff is real wall clock; tests should not wait through it.
+        network_backoff_s=0.0,
+        rate_limit_wait_s=0.0,
     )
 
 
@@ -138,6 +141,123 @@ def test_transport_failure_moves_down_the_chain_instead_of_re_asking(live: AIGat
     assert gemini.called
     kinds = [(r.provider, r.ok) for r in live.sink.records]
     assert kinds == [("groq", False), ("gemini", True)]
+
+
+def test_a_strict_schema_asks_for_every_key_and_keeps_the_bounds_in_the_prompt() -> None:
+    """The split the live providers forced.
+
+    Groq refuses a schema with a defaulted key left out of `required`, and refuses an
+    answer that breaks `minLength` by throwing it away — HTTP 400, nothing left to send
+    back for repair. So the compiler's copy is complete on shape and silent on size, and
+    the size limits stay in the prompt text and in our own validation.
+    """
+    provider = Answer.provider_schema()
+    prompt = Answer.schema_text()
+
+    assert provider["required"] == ["score", "text"]
+    assert provider["additionalProperties"] is False
+    assert "minLength" not in json.dumps(provider) and "maximum" not in json.dumps(provider)
+    assert "minLength" in prompt and "maximum" in prompt
+
+
+def test_a_reset_connection_is_retried_before_the_blame_moves(live: AIGateway) -> None:
+    """The failure this exists for: the socket dies before any of the answer arrives.
+
+    Nothing about the prompt or the provider caused it, so re-sending the identical
+    request is the correct response — not spending a repair on it, and not asking a
+    second provider that would be handed the same broken wire.
+    """
+    with respx.mock:
+        groq = respx.post(GROQ_URL).mock(
+            side_effect=[
+                httpx.ConnectError("[Errno 104] Connection reset by peer"),
+                httpx.RemoteProtocolError("Server disconnected without sending a response."),
+                httpx.Response(200, json=_openai_body({"text": "grounded", "score": 7})),
+            ]
+        )
+        gemini = respx.post(GEMINI_URL).mock(
+            return_value=httpx.Response(200, json={"candidates": []})
+        )
+        result = live.ask(task="answer", system=SYSTEM, user=USER, schema=Answer)
+
+    assert result.score == 7
+    assert groq.call_count == 3
+    assert not gemini.called
+
+
+def test_a_reset_that_keeps_happening_still_moves_down_the_chain(live: AIGateway) -> None:
+    with respx.mock:
+        groq = respx.post(GROQ_URL).mock(side_effect=httpx.ConnectError("reset"))
+        gemini = respx.post(GEMINI_URL).mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "candidates": [
+                        {"content": {"parts": [{"text": '{"text": "ok", "score": 3}'}]}}
+                    ],
+                    "usageMetadata": {"promptTokenCount": 50, "candidatesTokenCount": 10},
+                },
+            )
+        )
+        result = live.ask(task="answer", system=SYSTEM, user=USER, schema=Answer)
+
+    assert result.score == 3
+    assert groq.call_count == config.NETWORK_ATTEMPTS
+    assert gemini.called
+
+
+def test_a_timeout_is_not_resent_because_the_model_may_still_be_answering(
+    live: AIGateway,
+) -> None:
+    """A reset means nothing was produced; a timeout does not, so re-sending it would
+    pay for the same generation twice."""
+    with respx.mock:
+        groq = respx.post(GROQ_URL).mock(side_effect=httpx.ReadTimeout("timed out"))
+        respx.post(GEMINI_URL).mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "candidates": [
+                        {"content": {"parts": [{"text": '{"text": "ok", "score": 5}'}]}}
+                    ],
+                    "usageMetadata": {"promptTokenCount": 50, "candidatesTokenCount": 10},
+                },
+            )
+        )
+        result = live.ask(task="answer", system=SYSTEM, user=USER, schema=Answer)
+
+    assert result.score == 5
+    assert groq.call_count == 1
+
+
+def test_the_gateway_holds_one_connection_open_across_calls(live: AIGateway) -> None:
+    """The resets this network produces happen at the handshake, so handshaking per call
+    pays for a connection the pipeline was going to need anyway."""
+    assert live._client() is live._client()
+
+
+def test_a_rate_limit_waits_for_the_window_instead_of_blaming_the_next_model(
+    live: AIGateway,
+) -> None:
+    """Groq's free tier limits tokens per minute, so a 429 is a schedule, not a verdict.
+
+    Falling over to Gemini here would ask a second provider to spend its quota on work
+    the first will do in under a minute — and with one credential configured it would
+    only turn a temporary limit into a permanent failure.
+    """
+    with respx.mock:
+        groq = respx.post(GROQ_URL).mock(
+            side_effect=[
+                httpx.Response(429, text="tokens per minute"),
+                httpx.Response(200, json=_openai_body({"text": "grounded", "score": 8})),
+            ]
+        )
+        gemini = respx.post(GEMINI_URL).mock(return_value=httpx.Response(200, json={}))
+        result = live.ask(task="answer", system=SYSTEM, user=USER, schema=Answer)
+
+    assert result.score == 8
+    assert groq.call_count == 2
+    assert not gemini.called
 
 
 def test_every_model_failing_raises_exhausted_instead_of_guessing(live: AIGateway) -> None:

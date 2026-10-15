@@ -64,9 +64,13 @@ class ModelSpec(BaseModel):
 
 
 # Ordered fallback chain. Groq first for latency, Gemini second for quota resilience.
-# Both are already in use on CSxEDU, so this reuses credentials you actually have.
+# Re-pinned 2026-10-15: `groq-llama-3.3-70b-specdec` now answers `model_not_found`, so
+# every live call died at the first hop. gpt-oss-120b is the smallest Groq model left
+# that declares `structured_outputs`, which the strict json_schema body below requires —
+# a model that ignores response_format would silently return prose and fail validation.
+# Prices are the per-token rates Groq's own /models endpoint reports, scaled to 1M.
 PRIMARY = ModelSpec(
-    provider="groq", model="groq-llama-3.3-70b-specdec", input_per_1m=0.59, output_per_1m=0.79
+    provider="groq", model="openai/gpt-oss-120b", input_per_1m=0.15, output_per_1m=0.60
 )
 FALLBACK = ModelSpec(
     provider="gemini", model="gemini-2.0-flash-001", input_per_1m=0.10, output_per_1m=0.40
@@ -76,6 +80,21 @@ MODEL_CHAIN: tuple[ModelSpec, ...] = (PRIMARY, FALLBACK)
 
 MAX_REPAIR_ATTEMPTS = 2
 REQUEST_TIMEOUT_S = 45.0
+
+# A connection that resets before the model answers is a property of the wire, not of
+# the prompt or the provider, so it gets its own retry budget instead of being counted
+# as a repair. Measured on a Dhaka broadband link in October 2026: POSTs to Groq reset
+# outright about a third of the time, and a second try after a pause usually lands.
+# An error the server actually responded with is not retried here — that moves down the
+# fallback chain, which is the older and still correct rule.
+NETWORK_ATTEMPTS = 3
+NETWORK_BACKOFF_S = 1.5
+
+# Groq's free tier limits *tokens per minute*, not requests, and one extraction call with
+# a job description in it is a few thousand tokens. So a 429 here is not a failure to
+# route around, it is a schedule: the same request will succeed shortly. Waiting is the
+# only correct response, and a second provider with no credential helps nobody.
+RATE_LIMIT_WAIT_S = 45.0
 
 # A CV bullet ships only if the entailment judge agrees it is supported.
 # Anything below this is dropped rather than softened.

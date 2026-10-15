@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
 from typing import TYPE_CHECKING
 
 from pydantic import ValidationError
@@ -31,6 +32,9 @@ from careerpilot.ai.trace import CallRecord, Timer, TraceSink, default_sink
 from careerpilot.config import (
     MAX_REPAIR_ATTEMPTS,
     MODEL_CHAIN,
+    NETWORK_ATTEMPTS,
+    NETWORK_BACKOFF_S,
+    RATE_LIMIT_WAIT_S,
     REQUEST_TIMEOUT_S,
     live_mode_enabled,
 )
@@ -39,7 +43,8 @@ if TYPE_CHECKING:
     import httpx
 
     from careerpilot.ai.cassette import CassetteStore
-    from careerpilot.ai.providers import Provider
+    from careerpilot.ai.providers import Provider, ProviderReply
+    from careerpilot.config import ModelSpec
 
 SYSTEM_PREAMBLE = """You are a structured data extraction engine, not a chat assistant.
 
@@ -64,11 +69,18 @@ class AIGateway:
         cassette: CassetteStore | None = None,
         sink: TraceSink | None = None,
         timeout: float = REQUEST_TIMEOUT_S,
+        network_attempts: int = NETWORK_ATTEMPTS,
+        network_backoff_s: float = NETWORK_BACKOFF_S,
+        rate_limit_wait_s: float = RATE_LIMIT_WAIT_S,
     ) -> None:
         self._providers = providers
         self._cassette = cassette
         self._sink = sink or default_sink
         self._timeout = timeout
+        self._network_attempts = network_attempts
+        self._network_backoff_s = network_backoff_s
+        self._rate_limit_wait_s = rate_limit_wait_s
+        self._http: httpx.Client | None = None
 
     @property
     def sink(self) -> TraceSink:
@@ -124,6 +136,54 @@ class AIGateway:
         )
         return result
 
+    def _generate(
+        self,
+        provider: Provider,
+        *,
+        system: str,
+        messages: list[dict[str, str]],
+        schema: type[OutputT],
+        spec: ModelSpec,
+    ) -> ProviderReply:
+        """Ask one model, retrying only a wire that broke or a limit that will pass.
+
+        A reset connection says nothing about the prompt or the model, so it gets its
+        own budget instead of spending a repair or burning down the fallback chain. A
+        rate limit says the same thing about the quota — it says *come back in a
+        minute* — so it waits rather than moving on, because the next provider would be
+        asked to do the same work with the same tokens. An error that is neither is a
+        verdict and is left alone: that is the case the fallback chain exists for. A
+        timeout is left alone too, since the generation may still be running upstream
+        and re-sending it would pay for it twice.
+        """
+        import httpx  # noqa: PLC0415 - matched against exception types at call time
+
+        broken_wire = (httpx.ConnectError, httpx.ReadError, httpx.RemoteProtocolError)
+        hop = 0
+        while True:
+            try:
+                return provider.generate(
+                    system=system,
+                    messages=messages,
+                    schema=schema,
+                    model=spec,
+                    client=self._client(),
+                )
+            except TransportError as exc:
+                if not exc.retryable:
+                    raise
+                hop += 1
+                if hop >= self._network_attempts:
+                    raise
+                time.sleep(self._rate_limit_wait_s)
+            except broken_wire as exc:
+                if isinstance(exc, httpx.TimeoutException):
+                    raise
+                hop += 1
+                if hop >= self._network_attempts:
+                    raise
+                time.sleep(self._network_backoff_s * 2**hop)
+
     def _call_live(
         self,
         *,
@@ -147,9 +207,8 @@ class AIGateway:
                 total_attempts += 1
                 with Timer() as timer:
                     try:
-                        reply = provider.generate(
-                            system=system, messages=messages, schema=schema,
-                            model=spec, client=self._client(),
+                        reply = self._generate(
+                            provider, system=system, messages=messages, schema=schema, spec=spec
                         )
                     except TransportError as exc:
                         self._trace(
@@ -238,9 +297,18 @@ class AIGateway:
         )
 
     def _client(self) -> httpx.Client:
+        """One connection, held open and reused for every call in this process.
+
+        This is not a pooling optimization. Measured on the link this tool is built for,
+        a fresh TLS handshake per call was reset roughly half the time, while eight
+        requests pushed down one already-open connection all landed. Handshaking per
+        call was paying the network's price for a connection that was never needed.
+        """
         import httpx  # noqa: PLC0415 - resolved at call time so tests can substitute it
 
-        return httpx.Client(timeout=self._timeout)
+        if self._http is None:
+            self._http = httpx.Client(timeout=self._timeout)
+        return self._http
 
     def _trace(self, record: CallRecord) -> None:
         self._sink.record(record)

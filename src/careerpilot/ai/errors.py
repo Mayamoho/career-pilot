@@ -14,7 +14,16 @@ class AIError(Exception):
 
 
 class TransportError(AIError):
-    def __init__(self, provider: str, detail: str, *, retryable: bool = True) -> None:
+    """We got no usable answer from that provider.
+
+    `retryable` asks a narrower question than "did this fail": whether the *same*
+    request to the *same* model would plausibly do any better on the second try. A rate
+    limit would, because a minute passes. A 503, an unreadable body or a provider with
+    no adapter would not, and those are the majority — so the flag is opt-in and the
+    default is to move down the fallback chain instead of spending the retry budget.
+    """
+
+    def __init__(self, provider: str, detail: str, *, retryable: bool = False) -> None:
         super().__init__(f"{provider}: {detail}")
         self.provider = provider
         self.retryable = retryable
