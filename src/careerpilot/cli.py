@@ -225,7 +225,8 @@ def tailor(
 @app.command()
 def traces() -> None:
     """Summarise recorded AI calls: failures per task, fallback use, cost."""
-    typer.echo(json.dumps(get_gateway().sink.summary(), indent=2))
+    sink = get_gateway().sink
+    typer.echo(json.dumps(sink.summary(sink.read_disk()), indent=2))
 
 
 @app.command(name="record-fixtures")

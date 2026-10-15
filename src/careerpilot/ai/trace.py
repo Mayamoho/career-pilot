@@ -13,7 +13,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from careerpilot.config import DATA_DIR
 
@@ -59,24 +59,41 @@ class TraceSink:
         with self._lock:
             return list(self._records)
 
+    def read_disk(self) -> list[CallRecord]:
+        """Every call this machine has ever traced, not just the ones this process made.
+
+        `careerpilot traces` runs in a process of its own, where the in-memory list is
+        empty by definition. Reporting zeros there would be the one thing an
+        observability layer must never do: look healthy because nothing was looked at.
+        """
+        if self.path is None or not self.path.exists():
+            return []
+        records: list[CallRecord] = []
+        for line in self.path.read_text(encoding="utf-8").splitlines():
+            try:
+                records.append(CallRecord.model_validate_json(line))
+            except ValidationError:
+                continue  # a half-written last line from a killed process
+        return records
+
     def clear(self) -> None:
         with self._lock:
             self._records.clear()
 
-    def summary(self) -> dict[str, Any]:
-        calls = self.records
+    def summary(self, calls: list[CallRecord] | None = None) -> dict[str, Any]:
+        records = self.records if calls is None else calls
         by_task: dict[str, dict[str, int | float]] = {}
-        for call in calls:
+        for call in records:
             bucket = by_task.setdefault(call.task, {"calls": 0, "failures": 0, "cost_usd": 0.0})
             bucket["calls"] = int(bucket["calls"]) + 1
             if not call.ok:
                 bucket["failures"] = int(bucket["failures"]) + 1
             bucket["cost_usd"] = round(float(bucket["cost_usd"]) + call.cost_usd, 6)
         return {
-            "total_calls": len(calls),
-            "total_failures": sum(1 for c in calls if not c.ok),
-            "total_cost_usd": round(sum(c.cost_usd for c in calls), 6),
-            "fallback_invocations": sum(1 for c in calls if c.provider != "groq" and c.ok),
+            "total_calls": len(records),
+            "total_failures": sum(1 for c in records if not c.ok),
+            "total_cost_usd": round(sum(c.cost_usd for c in records), 6),
+            "fallback_invocations": sum(1 for c in records if c.provider != "groq" and c.ok),
             "by_task": by_task,
         }
 
