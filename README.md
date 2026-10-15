@@ -398,7 +398,13 @@ one format every parser survives and the only one you can paste into a portal bo
 ### 5. Which of these are worth your day
 
 ```bash
-careerpilot rank --limit 8 --max-new 5
+careerpilot rank --limit 8
+```
+
+```
+… scoring 1/5: Felna Tech (FelnaTech.com) — Full-Stack Developer Intern
+… extracting requirements from bdjobs:1545472
+… scoring 2/5: Goethe-Institut and German Cultural Center — Information Technology - Administrator
 ```
 
 ```
@@ -409,10 +415,16 @@ bdtechjobs:5      46.2 partial   [onsite] no deadline     Bdtask Limited — Jun
 jobicy:155389     26.9 weak      [remote] no deadline     Supabase — Platform Engineer, Managed Postgres
 ```
 
-This is the only new command that can spend money, and `--max-new` is why it exists: Groq's
-free tier throttles *tokens per minute*, and an uncapped batch rank is exactly how a live run
-died halfway through a cover letter. Scores are stored, so the same command a minute later
-costs nothing:
+The `…` lines are progress and they go to **stderr**, so `rank > shortlist.txt` still gives
+you a clean file while the terminal keeps saying what it is doing. Each one is a real model
+call, which on this link is ten to thirty seconds — a command that quiet looks hung, and a
+command that looks hung gets interrupted.
+
+This is the only command in the tool that can spend anything. `--max-new` (default 5) is
+there because Groq's free tier caps *tokens per minute* **and tokens per day** — measured
+2026-10-16: `tokens per day (TPD): Limit 200000` on `openai/gpt-oss-120b`. One extraction is
+a few thousand tokens, so an uncapped batch rank spends a whole day's quota on one screen of
+results. Scores are stored, so the same command a minute later costs nothing:
 
 ```
 # workable from Bangladesh — 0 fresh score(s), 6 reused, 110 over the --max-new budget
@@ -460,6 +472,11 @@ wrote var/out/bdjobs-1545472/cover-letter.html
 
 The uid's colon becomes a dash in the folder name. `--style` picks the print forms: `both`
 (the default, both HTML files plus the text), `ats`, `oxford`, or `md` for markdown only.
+
+While it runs, `tailor` names each stage on stderr — extracting, drafting bullets, drafting
+the letter, gating — because it is four or more model calls and the whole run is a minute or
+more on a real connection. Same for `collect` (one line per board) and `rank` (one per fresh
+score). Those lines never appear in your redirected output file.
 
 | File | What it is |
 |---|---|
@@ -552,6 +569,13 @@ free tier throws schema errors, and the retry path is what you are paying five c
 instead of a broken CV — and `fallback_invocations` is 0, because the Gemini key was never
 configured, so the fallback has been tested but never exercised for real.
 
+The real ceiling is not money, it is that free tier's **daily token window** (measured
+2026-10-16: `tokens per day (TPD): Limit 200000` on `openai/gpt-oss-120b`). Once it is spent,
+`rank` and `tailor` stop with a `fix:` line naming the midnight-UTC reset rather than sleeping
+on a limit that a minute cannot clear. `ats`, `jobs`, `closing`, `start-here` and `collect`
+keep working all day, because none of them ask a model anything. This is the argument for
+configuring `GEMINI_API_KEY`: a second provider is a second daily window, not just a backup.
+
 A sensible weekly loop: `collect`, skim `jobs`, `ats` your CV against the two or three that
 look right, `rank --max-new 5` to spend the day's budget where it counts, `tailor` only the
 ones that come back `strong`. Steps 1–4 and 8–10 are free.
@@ -605,6 +629,8 @@ count when a tech term is in the same title, so "Python Automation Intern" is ke
 | `jobs --where bd` returns almost nothing | Your `contact.location` has no country in it, so nothing matches as "in Bangladesh". Put the country in the address — this is the line the whole location verdict is read from. |
 | `tailor` exits with code 2 | A blocked location or a passed deadline, refused before any spend. Read the `refusing:` line; use `--ignore-location` / `--ignore-deadline` only when the board's own field is wrong. |
 | `rank` prints `N over the --max-new budget` | Not an error: those postings were reachable but unscored because you capped the run. Re-run tomorrow — already-scored ones are reused for free, and the queue continues where it stopped. |
+| `gave up after N attempt(s)` and a line starting `fix:` | The AI layer did its job: it refused to guess. Either the day's Groq tokens are spent (free tier resets at midnight UTC, and `careerpilot traces` shows what today cost) or the fallback provider has no key. Set `GEMINI_API_KEY` in `.env` and the same command runs today. |
+| A command prints `… <stage>` lines forever | Those are progress on stderr, not output. A stage taking tens of seconds is one model call over the network, not a hang — Ctrl+C is safe, since every score commits as it lands. |
 | `ats` puts a keyword you know under `NOT IN YOUR FACT BASE` | The checker is right about the file, not about you: the term is not in any atom. Add the atom (if it is true) with `start-here --out` on a fresh file or by editing `data/profile.yaml`, then re-run. If the term is a compound like `Git/GitHub`, it is now split into its halves. |
 | `start-here` says the file exists | It will not overwrite a fact base you already have. Either point `--out` somewhere else or pass `--force` deliberately. |
 

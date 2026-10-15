@@ -8,6 +8,7 @@ own usage fields where present so cost accounting is not a guess.
 from __future__ import annotations
 
 import json
+import re
 from typing import Any, Protocol
 
 import httpx
@@ -21,19 +22,27 @@ CREDENTIAL_ENV = {"groq": "GROQ_API_KEY", "gemini": "GEMINI_API_KEY"}
 HTTP_ERROR_STATUS = 400
 RETRYABLE_STATUSES = frozenset({408, 409, 429})
 
+# Not every 429 is a minute. Measured 2026-10-16 on the free tier:
+# `Rate limit reached for model openai/gpt-oss-120b … on tokens per day (TPD):
+# Limit 200000, Used 197861`. A day-sized window does not close by waiting, so it is
+# treated as the verdict it is rather than slept through twice.
+_DAILY_WINDOW = re.compile(r"per day|per month|per week|\(TPD\)|\(RPD\)|daily", re.I)
+
 
 def _http_failure(model: ModelSpec, response: httpx.Response) -> TransportError:
     """Wrap a status code in the one error type that knows what waiting can fix.
 
-    A 429 is a schedule: the tokens free up in under a minute and the same request will
-    succeed, so it is retryable in place. A 5xx is a verdict about that model, and the
-    fallback chain — not a re-ask — is the answer to it. Conflating the two wastes the
-    chain on a rate limit and re-asks a dead model.
+    A 429 with a minute-sized window is a schedule: the tokens free up shortly and the
+    same request will succeed, so it is retryable in place. A 429 naming a day window is
+    a verdict about today, and the fallback chain — not a re-ask — is the answer to it.
+    A 5xx is a verdict about that model too. Conflating the two wastes the chain on a
+    rate limit and re-asks a dead model; it also buys the user 90 silent seconds.
     """
+    body = response.text[:200]
     return TransportError(
         model.provider,
-        f"HTTP {response.status_code}: {response.text[:200]}",
-        retryable=response.status_code in RETRYABLE_STATUSES,
+        f"HTTP {response.status_code}: {body}",
+        retryable=response.status_code in RETRYABLE_STATUSES and not _DAILY_WINDOW.search(body),
     )
 
 

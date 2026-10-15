@@ -8,6 +8,8 @@ usually wasted budget and we should move down the fallback chain instead.
 
 from __future__ import annotations
 
+import re
+
 
 class AIError(Exception):
     """Base class for everything raised by the AI layer."""
@@ -73,8 +75,34 @@ class ExhaustedRetriesError(AIError):
     def __init__(self, task: str, attempts: int, causes: list[str]) -> None:
         super().__init__(
             f"{task}: gave up after {attempts} attempt(s). "
-            f"Escalate to a human. Causes: {' | '.join(causes)}"
+            f"Escalate to a human. Causes: {' | '.join(causes)}{_hint(causes)}"
         )
         self.task = task
         self.attempts = attempts
         self.causes = causes
+
+
+_DAILY_QUOTA = re.compile(r"per day|\(TPD\)|daily", re.I)
+_MISSING_KEY = re.compile(r"MissingProviderCredential|is not set", re.I)
+
+
+def _hint(causes: list[str]) -> str:
+    """The one action the reader can actually take, derived from the causes, in code.
+
+    A stack trace of provider JSON is not a next step. These two failures are the ones a
+    free-tier user hits every day, and each has exactly one answer: wait for the window,
+    or set the key. Nothing here is invented — it is read off the causes that were raised.
+    """
+    blob = " | ".join(causes)
+    if _DAILY_QUOTA.search(blob):
+        return (
+            "\nfix: your Groq daily token quota is spent (free tier resets at midnight "
+            "UTC). Re-run tomorrow, or set GEMINI_API_KEY so the fallback chain has a "
+            "second provider to use today."
+        )
+    if _MISSING_KEY.search(blob) and "HTTP" not in blob:
+        return (
+            "\nfix: the fallback chain has only one usable provider. Set GEMINI_API_KEY "
+            "in .env so a Groq limit can be routed around."
+        )
+    return ""

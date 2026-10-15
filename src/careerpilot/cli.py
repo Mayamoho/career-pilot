@@ -104,6 +104,17 @@ def _spoken_not_dumped() -> Iterator[None]:
         raise typer.Exit(code=1) from exc
 
 
+def _working(message: str) -> None:
+    """One line of progress on stderr while a slow stage runs.
+
+    stderr, not stdout, because stdout is the result: `careerpilot rank > shortlist.txt`
+    has to stay clean while the person watching the terminal can still see that nothing
+    is stuck. A model call is tens of seconds, and silence over that window reads as a
+    hang — which is how a working tool gets Ctrl+C'd.
+    """
+    typer.echo(f"… {message}", err=True)
+
+
 @app.command()
 def collect(
     *,
@@ -115,7 +126,8 @@ def collect(
     store = _store(db)
     try:
         report = pipeline.collect(
-            BOARDS, only_verified=only_verified, store=store, keep_all=keep_all
+            BOARDS, only_verified=only_verified, store=store, keep_all=keep_all,
+            progress=_working,
         )
         typer.echo(json.dumps(report.model_dump(), indent=2, default=str))
         typer.echo(f"{store.count()} job(s) in store")
@@ -193,7 +205,7 @@ def score_job(
         if job is None:
             raise typer.BadParameter(f"no job with uid {uid!r}")
         with _spoken_not_dumped():
-            scored = pipeline.score(job, candidate, store=store)
+            scored = pipeline.score(job, candidate, store=store, progress=_working)
         loc = scored.fit.location
         verdict = "workable" if loc.workable else "NOT WORKABLE"
         typer.echo(f"{scored.fit.total:.1f}/100 — {scored.fit.band}")
@@ -256,7 +268,7 @@ def tailor(
             typer.echo("pass --ignore-deadline to tailor it anyway.")
             raise typer.Exit(code=2)
         with _spoken_not_dumped():
-            result = pipeline.tailor(job, candidate, store=store)
+            result = pipeline.tailor(job, candidate, store=store, progress=_working)
         artifacts = render.write(result, candidate, out, styles)
         bullets = result.bullets.report
         typer.echo(f"fit {result.fit.total:.1f}/100 ({result.fit.band})")
@@ -314,7 +326,7 @@ def record_fixtures(
                 typer.echo(f"skipping {uid}: not in store")
                 continue
             with _spoken_not_dumped():
-                pipeline.tailor(job, candidate, store=store)
+                pipeline.tailor(job, candidate, store=store, progress=_working)
             typer.echo(f"recorded {uid}")
     finally:
         store.close()
@@ -409,15 +421,21 @@ def rank(
     query: Annotated[str, typer.Argument(help="FTS keyword filter.")] = "",
     max_new: Annotated[
         int,
-        typer.Option("--max-new", help="Fresh model calls this run; the free tier throttles."),
-    ] = 15,
+        typer.Option(
+            "--max-new",
+            help="Fresh model calls this run. The free tier caps tokens per day, so this "
+            "is the spend cap; one extraction is a few thousand tokens.",
+        ),
+    ] = 5,
     home: Annotated[str | None, typer.Option("--home")] = None,
 ) -> None:
     """Which postings are worth your time, cheapest first.
 
     A posting already in the `scores` table is read back rather than re-scored, so the
     second run of this command costs nothing. `--max-new` exists because Groq's free tier
-    limits tokens per minute: an uncapped batch is how a live run dies halfway through.
+    limits tokens per day, not just per minute: an uncapped batch is how a live run dies
+    halfway through with a quota it cannot refill until midnight UTC. Each fresh score
+    prints a line as it starts, so a run that is working is never mistaken for a hang.
     """
     _check_where(where)
     candidate = _profile(profile)
@@ -442,6 +460,7 @@ def rank(
                 skipped += 1
                 continue
             fresh += 1
+            _working(f"scoring {fresh}/{max_new}: {job.company} — {job.title}")
             with _spoken_not_dumped():
                 fit = pipeline.score(job, candidate, store=store).fit
             ranked.append((place, job, fit.total, fit.band))

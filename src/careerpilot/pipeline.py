@@ -6,7 +6,7 @@ stage without dragging the network or the model along with it.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 
 from pydantic import BaseModel, Field
 
@@ -38,6 +38,7 @@ def collect(
     only_verified: bool = False,
     store: JobStore | None = None,
     keep_all: bool = False,
+    progress: Callable[[str], None] | None = None,
 ) -> CollectReport:
     owned = store is None
     job_store = store or JobStore()
@@ -50,6 +51,8 @@ def collect(
                 adapter = ADAPTERS.get(board.source)
                 if adapter is None:
                     continue
+                if progress is not None:
+                    progress(f"fetching {board.source}:{board.token}")
                 rows = adapter().fetch_board(client, board.token, board.company)
                 fetched = len(rows)
                 kept = [row for row in rows if keep_all or wanted_title(row.title)]
@@ -75,7 +78,15 @@ class Scored(BaseModel):
     fit: FitScore
 
 
-def score(job: JobPosting, profile: Profile, *, store: JobStore | None = None) -> Scored:
+def score(
+    job: JobPosting,
+    profile: Profile,
+    *,
+    store: JobStore | None = None,
+    progress: Callable[[str], None] | None = None,
+) -> Scored:
+    if progress is not None:
+        progress(f"extracting requirements from {job.uid}")
     requirements = extract_requirements(job)
     fit = score_job(job, requirements, profile)
     if store is not None:
@@ -98,10 +109,28 @@ class Tailored(BaseModel):
         return [v.text for v in self.bullets.report.shipped]
 
 
-def tailor(job: JobPosting, profile: Profile, *, store: JobStore | None = None) -> Tailored:
-    scored = score(job, profile, store=store)
+def tailor(
+    job: JobPosting,
+    profile: Profile,
+    *,
+    store: JobStore | None = None,
+    progress: Callable[[str], None] | None = None,
+) -> Tailored:
+    """Run every stage in order, naming each one to `progress` as it starts.
+
+    The stages each spend a model call and the whole run is tens of seconds on a real
+    link; without a word as they begin, the tool looks frozen exactly when it is working
+    hardest. `progress` is how the CLI keeps the terminal honest about that.
+    """
+    scored = score(job, profile, store=store, progress=progress)
+    if progress is not None:
+        progress("drafting bullets from your facts")
     bullets = tailor_bullets(job, scored.fit, profile)
+    if progress is not None:
+        progress("drafting the cover letter")
     letter_draft = draft_letter(job, bullets.targets, scored.fit, profile)
+    if progress is not None:
+        progress("gating every line against the fact base")
     letter_report = gate_letter(letter_draft.paragraphs, profile)
     return Tailored(
         scored=scored,

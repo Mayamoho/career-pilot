@@ -260,6 +260,32 @@ def test_a_rate_limit_waits_for_the_window_instead_of_blaming_the_next_model(
     assert not gemini.called
 
 
+def test_a_daily_quota_moves_on_instead_of_waiting_through_it(
+    live: AIGateway,
+) -> None:
+    """A day-sized window is a verdict about today, not a minute to sit through.
+
+    Measured 2026-10-16: `tokens per day (TPD): Limit 200000, Used 197861`. Retrying that
+    in place bought 90 silent seconds and the same refusal — the user reads a tool that
+    waits as a tool that hung. The chain is the answer, exactly as it is for a 5xx.
+    """
+    with respx.mock:
+        groq = respx.post(GROQ_URL).mock(
+            return_value=httpx.Response(
+                429, text="Rate limit reached on tokens per day (TPD): Limit 200000"
+            )
+        )
+        gemini = respx.post(GEMINI_URL).mock(
+            return_value=httpx.Response(200, json={"candidates": [{"content": {"parts": [
+                {"text": '{"text": "grounded", "score": 8}'}]}}]})
+        )
+        result = live.ask(task="answer", system=SYSTEM, user=USER, schema=Answer)
+
+    assert result.score == 8
+    assert groq.call_count == 1, "a daily limit must not be re-asked in place"
+    assert gemini.called
+
+
 def test_every_model_failing_raises_exhausted_instead_of_guessing(live: AIGateway) -> None:
     with respx.mock:
         respx.post(GROQ_URL).mock(

@@ -234,6 +234,44 @@ def test_rank_spends_nothing_when_the_budget_is_zero(
     assert "1 over the --max-new budget" in result.output
 
 
+def test_rank_shows_it_is_working_without_dirtying_the_list(
+    tmp_path: Path, runner: CliRunner, use_task_fake: Any
+) -> None:
+    """A fresh score is a model call, so it has to say so on stderr — and only there.
+
+    stdout is what gets redirected into a shortlist file; progress mixed into it would
+    make `careerpilot rank > jobs.txt` produce a file nobody can read.
+    """
+    db = _store_with(tmp_path, _posting("bdjobs:1542177"))
+    use_task_fake({"extract_requirements": _EXTRACTED, "cite_evidence": {
+        "atom_ids": ["proj-csxedu-rag"]}})
+
+    result = runner.invoke(app, ["rank", "--db", db, "--profile", PROFILE])
+
+    assert "… scoring 1/5" in _output(result)
+    assert "… scoring 1/5" not in result.stdout
+    assert result.stdout.splitlines()[0].startswith("# workable from")
+
+
+def test_tailor_names_each_stage_as_it_runs(
+    tmp_path: Path, runner: CliRunner, use_task_fake: Any
+) -> None:
+    db = _store_with(tmp_path, _posting("bdjobs:1542177"))
+    use_task_fake({
+        "extract_requirements": _EXTRACTED,
+        "cite_evidence": {"atom_ids": ["proj-csxedu-rag"]},
+        "draft_bullets": {"bullets": []},
+        "draft_letter": {"paragraphs": []},
+    })
+
+    result = runner.invoke(app, ["tailor", "bdjobs:1542177", "--db", db, "--profile", PROFILE])
+
+    spoken = _output(result)
+    assert "… drafting bullets" in spoken and "… gating every line" in spoken
+    for prefix in ("fit ", "wrote "):
+        assert any(line.startswith(prefix) for line in result.stdout.splitlines())
+
+
 def test_rank_refuses_an_unknown_where_instead_of_returning_nothing(
     tmp_path: Path, runner: CliRunner
 ) -> None:

@@ -91,9 +91,11 @@ NETWORK_ATTEMPTS = 3
 NETWORK_BACKOFF_S = 1.5
 
 # Groq's free tier limits *tokens per minute*, not requests, and one extraction call with
-# a job description in it is a few thousand tokens. So a 429 here is not a failure to
-# route around, it is a schedule: the same request will succeed shortly. Waiting is the
-# only correct response, and a second provider with no credential helps nobody.
+# a job description in it is a few thousand tokens. So a 429 naming a minute window is not
+# a failure to route around, it is a schedule: the same request will succeed shortly.
+# Waiting is the only correct response, and a second provider with no credential helps
+# nobody. A 429 naming a *day* window is the opposite case and is not waited on at all —
+# see `_DAILY_WINDOW` in `ai/providers.py`.
 RATE_LIMIT_WAIT_S = 45.0
 
 # A CV bullet ships only if the entailment judge agrees it is supported.
