@@ -166,69 +166,136 @@ $env:GROQ_API_KEY="gsk_..."; $env:CAREERPILOT_LIVE="1"  # Windows PowerShell
 set GROQ_API_KEY=gsk_... & set CAREERPILOT_LIVE=1       # Windows cmd.exe (same window)
 ```
 
-Without `CAREERPILOT_LIVE=1` the tool replays recorded model answers and, when a prompt
-has no recording, refuses to invent one. That refusal is the design working: it would
-rather say nothing than make something up.
+Without `CAREERPILOT_LIVE=1` the tool only ever replays recorded model answers — and no
+answers are recorded yet, so a model-dependent command stops with a one-line explanation
+instead of inventing text. That refusal is the design working: it would rather say nothing
+than make something up.
 
 ## Use it, step by step
 
-Run these from the project folder with the environment active.
+Run these from the project folder with the environment active — `source .venv/bin/activate`
+on Linux/macOS, `.venv\Scripts\activate` on Windows. Steps 1 and 2 are free and need no
+key. Steps 3 and 4 call a model, so they need the `.env` from step 5 above.
 
-**1. Fetch the live listings.** Free, no key needed.
+### 1. Fetch the listings
 
 ```bash
 careerpilot collect
 ```
 
-**2. See what you can actually work.** This is the default view: postings reachable from
-the country in your profile, best-matched and newest first.
+```
+{
+  "fetched": 4712,
+  "inserted": 127,
+  "kept": 850,
+  "boards_ok": 21,
+  "boards_dead": ["ashby:synthflow", "greenhouse:grafana", ...]
+}
+858 job(s) in store
+```
+
+`boards_dead` is the curated list correcting itself: those tokens 404'd, so they are
+recorded rather than silently skipped.
+
+### 2. Look at what you can work
 
 ```bash
 careerpilot jobs
-careerpilot jobs --limit 100
 ```
 
-Each row is `uid  title  [mode] location  verdict`. Copy the uid from the left column —
-they are per-store, so no example uid here would survive being run.
+```
+# workable from Bangladesh
+bdtechjobs:41   Riseup Labs — IT Infrastructure & Network Lead    [onsite] Uttara, Dhaka       in Bangladesh
+bdtechjobs:52   Brain Station 23 — Senior Cloud Engineer          [onsite] Dhaka, Bangladesh   in Bangladesh
+bdtechjobs:14   Field Nation — Software Engineer                  [hybrid] Dhaka               in Bangladesh
+bdtechjobs:13   Field Nation — Senior Software Engineer (Full stack) [hybrid] Dhaka            in Bangladesh
+6 of 59 matching, 878 scanned
+```
+
+This is the default view: only postings reachable from the country in your profile, sorted
+best-first. The number of rows is small on purpose — 878 stored, 59 you can work, and the
+other 819 are shown to you by `--where all` with the reason attached.
+
+**The uid is the whole first column.** Copy it exactly, prefix and colon included:
+
+```
+bdtechjobs:41   Riseup Labs — IT Infrastructure & Network Lead
+^^^^^^^^^^^^^   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+uid             title — this is NOT the uid
+```
+
+It means `<which board it came from>:<its id on that board>`. One string, no spaces, no
+company name. `41`, `Riseup Labs`, and `bdtechjobs` alone are all wrong. Nothing else on
+that line is something you can hand to a command.
 
 Three other views:
 
 ```bash
 careerpilot jobs --where bd              # only postings located in your country
-careerpilot jobs --where all             # everything stored, each row saying why it is blocked
-careerpilot jobs "vector search"         # keyword search across the store
-careerpilot jobs --home Portugal         # ask what the same store offers from another country
+careerpilot jobs --where all             # everything, each row saying why it is blocked
+careerpilot jobs "cloud engineer"        # keyword search across the store
+careerpilot jobs --limit 100             # more rows
+careerpilot jobs --home Portugal         # what the same store offers from another country
 ```
 
-**3. Score one job before you spend anything on it.**
+### 3. Score one job — this is where money starts
 
 ```bash
-careerpilot score-job <uid>
+careerpilot score-job bdtechjobs:52
 ```
 
-Prints the fit score and band, the location verdict, and the profile atoms each requirement
-was matched against. This makes a few model calls.
+Prints the fit score and its band, the location verdict, then one line per requirement
+saying whether a profile atom met it and how much that requirement was worth, and finally
+any unmet must-haves. The score and every number in it are computed in Python from your
+atoms; the model only decides which requirement text matters and which skills it names.
 
-**4. Generate the documents.**
+Score before you tailor, and only for jobs you would actually apply to. This step makes
+several model calls.
+
+### 4. Generate the documents
 
 ```bash
-careerpilot tailor <uid>
+careerpilot tailor bdtechjobs:52
 ```
 
-Writes three files under `var/out/<uid>/` and prints their paths: the CV, the cover letter,
-and the audit trail. Read the audit trail — it lists every bullet the code dropped and which
-check it failed.
+Writes three files into `var/out/<uid>/` — the uid's colon becomes a dash in the folder
+name — and prints each path:
 
-**5. If it refuses, believe it.**
+| File | What it is |
+|---|---|
+| `cv.md` | the tailored CV |
+| `cover-letter.md` | the cover letter |
+| `audit.json` | every line that shipped, every line that was dropped, and the check that dropped it |
+
+Open `audit.json` before you use the CV. If the bullet count that shipped is lower than you
+expected, that is the gate working: a line it could not tie to one of your atoms is a line
+that would have been a lie on paper.
+
+### 5. Two answers you will meet, and what they mean
+
+`no job with uid '41'` — you passed part of a uid. Re-read the first column of `jobs` and
+copy all of it, colon included.
+
+```
+extract_requirements: no recorded answer for this prompt, and live model calls are
+off (CAREERPILOT_LIVE is not set). To run it for real, copy .env.example to .env
+in this folder, put your GROQ_API_KEY in it and leave CAREERPILOT_LIVE=1.
+```
+
+This is not a crash and not a bug. It means you skipped step 5 of Install: the tool can
+collect and search without a model, but it will not write CV prose without one, and it
+will not pretend it did. Do that step and re-run.
 
 ```
 refusing: remote, restricted to a region outside Bangladesh — home is Bangladesh.
 pass --ignore-location to tailor it anyway.
 ```
 
-That happens *before* any model call, so you are not billed for a job you cannot take. If
-you can in fact apply — you have the visa, or the posting's location field is simply wrong —
-add `--ignore-location`.
+Also not a crash: the posting is geographically closed to you, and the refusal happens
+*before* any model call so you are not billed for a CV nobody will hire you under. If it
+is genuinely wrong — you have the visa, or the board's location field is bad — add
+`--ignore-location`.
+
 
 **6. See what the calls cost you.**
 
@@ -247,8 +314,10 @@ right, `tailor` only the ones that come back `strong`. Step 2 is free; steps 3�
 | `pip: command not found` after activating | Same cause. Use `python -m pip ...`, which always targets the interpreter you just activated. |
 | PowerShell: ``cannot be loaded because running scripts is disabled`` | Activation needs script permission for this user: `Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser`, reopen the terminal. Or use `cmd.exe` with `.venv\Scripts\activate.bat`, or Git Bash with `source .venv/bin/activate`. |
 | `careerpilot: command not found` | The venv is not active in this terminal. Reactivate. On Windows it is `.venv\Scripts\careerpilot.exe` if you need the absolute path. |
-| `no recorded response for this prompt and CAREERPILOT_LIVE is not set` | You have not turned on live model calls — see step 5. Until you do, only `collect`, `jobs` and `traces` will run. |
+| `no recorded answer for this prompt, and live model calls are off` | You have not turned on live model calls — see *Add a model key* in Install. Until you do, only `collect`, `jobs` and `traces` will run. This is one sentence rather than a crash because the fix is in your environment, not in the code. |
+| `no job with uid '41'` | Part of a uid was passed. The uid is the whole first column of `jobs`, colon included: `bdtechjobs:41`. |
 | `GROQ_API_KEY is not set` | The key is missing from both your shell and `.env`. Note `.env` must be named exactly that, and `CAREERPILOT_LIVE` must be the literal string `1`. |
+| `no provider credential in the environment or in .env` from `record-fixtures` | Neither key is visible to the process. `.env` is read from the project folder, not from your home directory. |
 | `jobs` returns nothing | You have not collected yet, or every stored posting is blocked from your country. `careerpilot jobs --where all` shows what was skipped and why. |
 | `tailor` exits with code 2 | A blocked location, refused before any spend. Read the `refusing:` line; use `--ignore-location` only if it is genuinely wrong. |
 
@@ -287,8 +356,9 @@ is judged against yours. `Remote, Europe` is workable for a candidate in Lisbon 
 blocked for one in Dhaka; `Remote, AMER` is the other way round. Nothing about the
 posting changed.
 
-The consequence is that fit and reach stay separate. `score-job` prints `92.0/100 — strong`
-and then `location [NOT WORKABLE] from Bangladesh: flagged remote, but lists Washington, DC`.
+The consequence is that fit and reach stay separate. `score-job` prints the number and its
+band, then states the location verdict on its own line — `location [NOT WORKABLE] from
+Bangladesh: flagged remote, but lists Washington, DC`.
 `tailor` refuses a blocked posting **before making any model call**, since a tailored CV
 for a job restricted to another country is not a near miss. `--ignore-location` overrides it.
 
@@ -304,11 +374,14 @@ mypy src tests                      # strict, with the pydantic plugin
 ruff check src tests
 ```
 
-All four run with no credential in the environment: tests replay recorded model answers
-(`tests/fixtures/cassettes/`), which is what makes them free and repeatable to the digit.
-If you set `CAREERPILOT_LIVE=1` in `.env` for your own use, the suite stays deaf to it —
-that is pinned by a test, because otherwise following this README would quietly make every
-test on your machine bill you.
+All four run with no credential in the environment, and they are free because nothing leaves
+the machine: the suite drives scripted fakes for the answers and mocks the HTTP transport
+wherever a provider client is actually exercised. The cassette mechanism
+(`tests/fixtures/cassettes/`) is built and tested, but **nothing has been recorded into it
+yet** — that needs a key and one deliberate `record-fixtures` run, so today a fresh clone
+has no stored model answers at all. If you set `CAREERPILOT_LIVE=1` in `.env` for your own
+use, the suite stays deaf to it — that is pinned by a test, because otherwise following this
+README would quietly make every test on your machine bill you.
 
 There is no CI workflow file in this repository yet, so those four commands are the whole
 contract and they are yours to run before you commit. A `.github/workflows/ci.yml` that
